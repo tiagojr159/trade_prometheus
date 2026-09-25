@@ -1,0 +1,8 @@
+:root{--bg:#f5f7fb;--ink:#182033;--muted:#657085;--line:#dfe5ee;--up:#0f9f6e;--down:#d64545;--panel:#ffffff}
+body{background:var(--bg);color:var(--ink);font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:0}
+.navbar{background:#fff}.navbar-brand{letter-spacing:.08em}.metric,.prediction,.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:18px;box-shadow:0 8px 24px rgba(24,32,51,.05)}
+.auto-refresh-control{display:flex;align-items:center;gap:8px}.auto-refresh-control .form-label{margin:0;color:var(--muted);font-size:.82rem}.auto-refresh-control .form-select{width:auto;min-width:92px}.auto-refresh-control small{min-width:78px}
+.metric span,.prediction span{display:block;color:var(--muted);font-size:.86rem}.metric strong{display:block;font-size:1.8rem;line-height:1.2}.metric small,.prediction small{color:var(--muted)}
+.prediction{min-height:145px}.prediction.up{border-left:4px solid var(--up)}.prediction.down{border-left:4px solid var(--down)}.prediction b{font-size:.95rem}.prob{font-size:1.6rem;font-weight:700;margin-top:12px}.progress{height:8px;background:#ecf0f5}.progress-bar{background:linear-gradient(90deg,var(--down),var(--up))}
+.panel h2{font-size:1rem;margin:0 0 14px}.bar-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}.bar-row:last-child{border-bottom:0}.bar-row span{color:var(--muted)}.news{font-size:.9rem;border-bottom:1px solid var(--line);padding-bottom:8px}.table{--bs-table-bg:transparent}
+pre{background:#eef2f7;border:1px solid var(--line);border-radius:8px;padding:14px}

@@ -1,0 +1,22 @@
+# Configuracoes locais com credenciais
+/config/database.php
+/config/api_keys.php
+/.env
+/.env.*
+!/.env.example
+
+# Tokens e segredos locais
+*token*
+*tokens*
+*.pem
+*.key
+
+# Dados gerados localmente (cache, logs, locks e backups)
+/storage/cache/*
+!/storage/cache/.gitkeep
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/locks/*
+!/storage/locks/.gitkeep
+/storage/backups/*
+!/storage/backups/.gitkeep
