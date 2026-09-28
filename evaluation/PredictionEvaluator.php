@@ -77,6 +77,21 @@ final class PredictionEvaluator
                 [$p['id'], $finalPrice, $actual, $hit, $realizedReturn * 100, $brier, $hit, $realizedReturn, DirectionPolicy::EVALUATION_VERSION]
             );
 
+            // Prospective-only ATHENA-50 shadow scorecard; failures never alter the canonical result.
+            try {
+                $shadow = Database::fetch('SELECT shadow_probability_up FROM athena50_shadow_predictions WHERE prediction_id=? AND model_status IN ("READY","READY_PARTIAL")', [$p['id']]);
+                if ($shadow && $shadow['shadow_probability_up'] !== null) {
+                    $shadowP = (float)$shadow['shadow_probability_up'];
+                    $shadowDirection = $shadowP > 0.5 ? 'UP' : ($shadowP < 0.5 ? 'DOWN' : 'INDETERMINATE');
+                    Database::execute(
+                        'UPDATE athena50_shadow_predictions SET actual_direction=?,classic_hit=?,shadow_hit=?,classic_brier=?,shadow_brier=?,evaluated_at=NOW() WHERE prediction_id=?',
+                        [$actual, $hit, DirectionPolicy::hit($shadowDirection, $actual), $brier, DirectionPolicy::brier($shadowP, $actual), $p['id']]
+                    );
+                }
+            } catch (\Throwable $e) {
+                Logger::warning('athena50_shadow_evaluation_unavailable', ['prediction_id' => (int)$p['id'], 'message' => $e->getMessage()]);
+            }
+
             // MÃ©tricas por mÃ³dulo: FLAT nÃ£o entra (nÃ£o define direÃ§Ã£o real).
             if ($hit !== null) {
                 (new MetricsCalculator())->updateFromPrediction($p, $actual, $hit);

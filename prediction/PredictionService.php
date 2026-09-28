@@ -5,7 +5,9 @@ namespace Prometheus\prediction;
 
 use Prometheus\collectors\MarketCollector;
 use Prometheus\core\Database;
+use Prometheus\core\Logger;
 use Prometheus\intelligence\PrometheusEngine;
+use Prometheus\prediction\Athena50Shadow;
 
 final class PredictionService
 {
@@ -51,11 +53,19 @@ final class PredictionService
         foreach ($analysis['signals'] as $signal) {
             Database::execute('INSERT INTO signals (module, horizon, signal_value, confidence, metadata) VALUES (?, ?, ?, ?, ?)', [$signal->module, $horizon, $signal->value, $signal->confidence, json_encode($signal->metadata)]);
         }
+        $serializedSignals = array_map(fn($s) => $s->toArray(), $analysis['signals']);
         $id = Database::insert(
             'INSERT INTO predictions (symbol, horizon, target_time, initial_price, predicted_direction, probability_up, probability_down, confidence, ensemble_signal, regime, signals_json, weights_json, edge)
              VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [$symbol, $horizon, $seconds, $price, $analysis['direction'], $analysis['probability_up'], $analysis['probability_down'], $analysis['confidence'], $analysis['ensemble_signal'], $analysis['regime']['regime'], json_encode(array_map(fn($s) => $s->toArray(), $analysis['signals'])), json_encode($analysis['weights']), $analysis['edge']]
+            [$symbol, $horizon, $seconds, $price, $analysis['direction'], $analysis['probability_up'], $analysis['probability_down'], $analysis['confidence'], $analysis['ensemble_signal'], $analysis['regime']['regime'], json_encode($serializedSignals), json_encode($analysis['weights']), $analysis['edge']]
         );
+        try {
+            $createdAt = Database::fetch('SELECT created_at FROM predictions WHERE id=?', [$id]);
+            (new Athena50Shadow())->record($id, $symbol, $horizon, (string)($analysis['regime']['regime'] ?? 'UNKNOWN'), (string)($createdAt['created_at'] ?? date('Y-m-d H:i:s')), $serializedSignals);
+        } catch (\Throwable $e) {
+            // Shadow is strictly observational; its schema or computation cannot block production predictions.
+            Logger::warning('athena50_shadow_failed', ['prediction_id' => $id, 'horizon' => $horizon, 'message' => $e->getMessage()]);
+        }
         return ['id' => $id] + $analysis;
     }
 }

@@ -6,6 +6,7 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
    Para instalar a simulação de operações, importe também `sql/migrations/010_paper_trading.sql` uma única vez.
+   Para paper trading V2 e shadow ATHENA-50, importe em sequência `011_paper_trading_v2.sql` e `012_athena50_shadow.sql`.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`
@@ -45,7 +46,9 @@ Para executar a simulação automática a cada minuto, adicione ao agendador do 
 * * * * * php /caminho/prometheus/cron.php paper_trade
 ```
 
-As ordens são apenas simuladas e usam o saldo inicial de US$ 100. A estratégia compra ou vende quando a previsão de 15 minutos supera o limite de probabilidade configurado no simulador; um intervalo mínimo de 15 minutos evita operações repetidas. A frequência depende dos sinais disponíveis.
+As ordens são apenas simuladas, sem corretora ou dinheiro real. A migration 011 cria duas contas independentes com US$ 100 cada: DIRECTIONAL acompanha previsões e STRATEGY exige confirmação entre horizontes, histórico suficiente e expectativa estimada acima dos custos. As duas registram LONG/SHORT sintético, taxas, slippage, decisão e heartbeat. O intervalo entre novas entradas é configurável; a quantidade de operações depende dos dados recentes e dos sinais válidos, sem meta artificial de trades.
+
+A migration 012 ativa o experimento prospectivo ATHENA-50 isolado do ensemble. Ela não recupera dados brutos antigos; os resultados só aparecem depois que as previsões shadow novas forem avaliadas.
 
 ## Módulos
 
