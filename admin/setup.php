@@ -15,12 +15,17 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-$csrf = bin2hex(random_bytes(32));
-$_SESSION['admin_setup_csrf'] = $csrf;
+$isPost = (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST');
+$csrf = $isPost
+    ? (string) ($_SESSION['admin_setup_csrf'] ?? '')
+    : bin2hex(random_bytes(32));
+if (!$isPost) {
+    $_SESSION['admin_setup_csrf'] = $csrf;
+}
 $message = null;
 $error = null;
 
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+if ($isPost) {
     $csrfOk = isset($_POST['csrf'], $_SESSION['admin_setup_csrf'])
         && hash_equals((string) $_SESSION['admin_setup_csrf'], (string) $_POST['csrf']);
     $setupKey = (string) ($_POST['setup_key'] ?? '');
@@ -66,6 +71,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $error = $e instanceof RuntimeException ? $e->getMessage() : 'Não foi possível criar o usuário. Confirme que o SQL foi importado no banco do site.';
         }
     }
+    // Rotate after checking the submitted token, so failed submissions can be retried safely.
+    $csrf = bin2hex(random_bytes(32));
+    $_SESSION['admin_setup_csrf'] = $csrf;
 }
 ?>
 <!doctype html>
