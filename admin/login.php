@@ -42,7 +42,8 @@ $legacyConfigured = (getenv('PROMETHEUS_ADMIN_TOKEN') ?: '') !== '';
     <h1 class="h4 mb-3">Acesso ao PROMETHEUS</h1>
     <?php if ($error): ?><div class="alert alert-danger py-2" role="alert"><?= htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8') ?></div><?php endif; ?>
     <?php if (!$credentialsConfigured && !$legacyConfigured): ?>
-      <div class="alert alert-warning" role="alert">O administrador ainda não configurou as credenciais de acesso. Entre em contato com quem administra o servidor.</div>
+      <div class="alert alert-warning" role="alert">O administrador ainda não configurou as credenciais de acesso.</div>
+      <a class="btn btn-outline-primary w-100" href="setup.php">Configurar primeiro administrador</a>
     <?php else: ?>
       <form method="post" action="../index.php" autocomplete="on">
         <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
