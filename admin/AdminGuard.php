@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Prometheus\admin;
 
 use Prometheus\core\Logger;
+use Prometheus\core\Database;
 
 /** Protects administrative pages with a configured credential or admin session. */
 final class AdminGuard
@@ -24,9 +25,20 @@ final class AdminGuard
         if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $csrfOk = isset($_POST['csrf'], $_SESSION['login_csrf'])
                 && hash_equals((string) $_SESSION['login_csrf'], (string) $_POST['csrf']);
-            [$user, $passwordHash] = self::credentials();
             $postedUser = trim((string) ($_POST['admin_user'] ?? ''));
             $postedPassword = (string) ($_POST['admin_password'] ?? '');
+            $databaseValid = false;
+            if ($postedUser !== '' && $postedPassword !== '') {
+                try {
+                    $admin = Database::fetch('SELECT username, password_hash FROM admin_users WHERE username = ? AND active = 1 LIMIT 1', [$postedUser]);
+                    $databaseValid = $admin !== null && password_verify($postedPassword, (string) $admin['password_hash']);
+                } catch (\Throwable $e) {
+                    // Missing table or unavailable DB denies login; legacy credentials remain available during migration.
+                    Logger::warning('admin_database_auth_unavailable', ['message' => $e->getMessage()]);
+                }
+            }
+
+            [$user, $passwordHash] = self::credentials();
 
             // Retain support for deployments that still use the legacy token.
             $legacyToken = getenv('PROMETHEUS_ADMIN_TOKEN') ?: '';
@@ -36,10 +48,10 @@ final class AdminGuard
                 && hash_equals($user, $postedUser)
                 && password_verify($postedPassword, $passwordHash);
 
-            if ($csrfOk && ($credentialsValid || $legacyValid)) {
+            if ($csrfOk && ($databaseValid || $credentialsValid || $legacyValid)) {
                 session_regenerate_id(true);
                 $_SESSION['prometheus_admin_ok'] = true;
-                $_SESSION['prometheus_admin_user'] = $credentialsValid ? $user : 'admin';
+                $_SESSION['prometheus_admin_user'] = $databaseValid ? $postedUser : ($credentialsValid ? $user : 'admin');
                 unset($_SESSION['login_csrf']);
                 return;
             }
@@ -92,6 +104,15 @@ final class AdminGuard
             }
         }
         return ['', ''];
+    }
+
+    public static function databaseAdminConfigured(): bool
+    {
+        try {
+            return (int) (Database::fetch('SELECT COUNT(*) AS total FROM admin_users WHERE active = 1')['total'] ?? 0) > 0;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     private static function hardenSession(): void

@@ -24,7 +24,8 @@ $_SESSION['login_csrf'] = $csrf;
 $error = $_SESSION['login_error'] ?? null;
 unset($_SESSION['login_error']);
 $credentials = AdminGuard::credentials();
-$credentialsConfigured = $credentials[0] !== '' && $credentials[1] !== '';
+$credentialsConfigured = AdminGuard::databaseAdminConfigured()
+    || ($credentials[0] !== '' && $credentials[1] !== '');
 $legacyConfigured = (getenv('PROMETHEUS_ADMIN_TOKEN') ?: '') !== '';
 ?>
 <!doctype html>
