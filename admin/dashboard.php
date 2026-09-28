@@ -57,7 +57,17 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
     $ageMin = (time() - strtotime((string)$row['t'])) / 60;
     return $ageMin > $staleMinutes
         ? '<span class="badge bg-warning text-dark">desatualizada (' . (int)$ageMin . ' min)</span>'
-        : '<span class="badge bg-success">ok</span>';
+        : '<span class="badge bg-success">atualizada</span>';
+}
+
+function directionPt(?string $direction): string
+{
+    return ['UP' => 'ALTA', 'DOWN' => 'BAIXA', 'FLAT' => 'ESTÁVEL', 'INDETERMINATE' => 'INDEFINIDA'][$direction ?? ''] ?? ($direction ?? '—');
+}
+
+function signalStatusPt(string $status): string
+{
+    return ['AVAILABLE' => 'DISPONÍVEL', 'STALE' => 'DESATUALIZADO', 'UNAVAILABLE' => 'INDISPONÍVEL', 'ERROR' => 'ERRO'][$status] ?? $status;
 }
 ?>
 <!doctype html>
@@ -65,7 +75,7 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PROMETHEUS - BTC Intelligence</title>
+  <title>PROMETHEUS - Inteligência BTC</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="../assets/css/prometheus.css" rel="stylesheet">
 </head>
@@ -75,19 +85,20 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
     <a class="navbar-brand fw-bold" href="../index.php">PROMETHEUS</a>
     <div class="navbar-nav">
       <a class="nav-link" href="predictions.php">Previsões</a>
+      <a class="nav-link" href="simulation.php">Simulação</a>
       <a class="nav-link" href="modules.php">Módulos</a>
-      <a class="nav-link" href="performance.php">Performance</a>
-      <a class="nav-link" href="settings.php">Config</a>
+      <a class="nav-link" href="performance.php">Desempenho</a>
+      <a class="nav-link" href="settings.php">Configurações</a>
     </div>
     <div class="auto-refresh-control ms-auto me-3">
-      <label for="autoRefreshInterval" class="form-label">Atualizar</label>
+      <label for="autoRefreshInterval" class="form-label">Atualização</label>
       <select id="autoRefreshInterval" class="form-select form-select-sm" aria-label="Intervalo de atualizacao automatica">
         <option value="0">manual</option>
         <option value="60" selected>1 min</option>
         <option value="300">5 min</option>
         <option value="600">10 min</option>
       </select>
-      <small id="autoRefreshStatus" class="text-muted">auto ligado</small>
+      <small id="autoRefreshStatus" class="text-muted">automática ligada</small>
     </div>
     <span class="navbar-text">
       <small>Atualizado: <?= date('H:i:s') ?> · <?= htmlspecialchars($symbol) ?></small>
@@ -99,10 +110,10 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
   <section class="row g-3 mb-3">
     <div class="col-12 col-xl-3">
       <div class="metric">
-        <span>Preço BTC</span>
+        <span>Preço do BTC</span>
         <?php if ($price): ?>
           <strong>$<?= number_format((float)$price['close_price'], 2, ',', '.') ?></strong>
-          <small>candle <?= htmlspecialchars((string)$price['open_time']) ?></small>
+          <small>cotação de <?= htmlspecialchars((string)$price['open_time']) ?></small>
         <?php else: ?>
           <strong>indisponível</strong><small>execute a coleta de mercado</small>
         <?php endif; ?>
@@ -110,8 +121,8 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
     </div>
     <div class="col-12 col-xl-3">
       <div class="metric">
-        <span>Regime de mercado (estado, não direção)</span>
-        <strong><?= $regime ? htmlspecialchars((string)$regime['regime']) : 'indeterminado' ?></strong>
+        <span>Condição do mercado (estado, não direção)</span>
+        <strong><?= $regime ? htmlspecialchars(['TRENDING' => 'tendência', 'RANGING' => 'lateral', 'VOLATILE' => 'volátil'][$regime['regime']] ?? (string)$regime['regime']) : 'indeterminada' ?></strong>
         <small><?= $regime ? 'confiança ' . number_format((float)$regime['confidence'] * 100, 1) . '% · independente da direção prevista' : 'sem classificação ainda' ?></small>
       </div>
     </div>
@@ -143,11 +154,11 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
           <div class="prediction <?= $dirClass ?>">
             <div class="d-flex justify-content-between align-items-start">
               <span><?= htmlspecialchars($hz) ?></span>
-              <b><?= htmlspecialchars((string)$p['predicted_direction']) ?></b>
+              <b><?= directionPt((string)$p['predicted_direction']) ?></b>
             </div>
-            <div class="prob">P(up) <?= number_format($pUp * 100, 1) ?>%</div>
+            <div class="prob">Chance de alta: <?= number_format($pUp * 100, 1, ',', '.') ?>%</div>
             <div class="progress my-2"><div class="progress-bar" style="width:<?= $pUp * 100 ?>%"></div></div>
-            <small>P(down) <?= number_format((float)$p['probability_down'] * 100, 1) ?>% · conf. <?= number_format((float)$p['confidence'] * 100, 1) ?>% · edge <?= number_format($edgePp, 1) ?> p.p.</small>
+            <small>Chance de baixa: <?= number_format((float)$p['probability_down'] * 100, 1, ',', '.') ?>% · confiança <?= number_format((float)$p['confidence'] * 100, 1, ',', '.') ?>% · vantagem <?= number_format($edgePp, 1, ',', '.') ?> p.p.</small>
           </div>
         <?php else: ?>
           <div class="prediction" style="opacity:.55">
@@ -170,7 +181,7 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
         <?php foreach (['ATHENA', 'HERMES', 'POSEIDON', 'HEPHAESTUS', 'CRONOS', 'MARKET_RELATIONS'] as $m): ?>
           <?php if (isset($signalsByModule[$m])): $s = $signalsByModule[$m]; $signalMeta = json_decode((string)$s['metadata'], true) ?: []; $signalReason = strtolower((string)($signalMeta['reason'] ?? '')); $signalStatus = (string)($signalMeta['status'] ?? (preg_match('/(llm_analysis_failed|module_processing_failed|non_finite)/', $signalReason) ? 'ERROR' : (preg_match('/(no_|insufficient_|without_usable|unavailable)/', $signalReason) ? 'UNAVAILABLE' : 'AVAILABLE'))); ?>
             <div class="bar-row">
-              <span><?= htmlspecialchars($m) ?> <small class="text-muted"><?= htmlspecialchars($signalStatus) ?></small></span>
+              <span><?= htmlspecialchars(['ATHENA' => 'ATENA', 'HERMES' => 'HERMES', 'POSEIDON' => 'POSEIDON', 'HEPHAESTUS' => 'HEFESTO', 'CRONOS' => 'CRONOS', 'MARKET_RELATIONS' => 'RELAÇÕES DE MERCADO'][$m] ?? $m) ?> <small class="text-muted"><?= htmlspecialchars(signalStatusPt($signalStatus)) ?></small></span>
               <?php if (in_array($signalStatus, ['AVAILABLE', 'STALE'], true)): ?>
                 <b><?= number_format((float)$s['signal_value'], 3) ?> <small class="text-muted">(conf. <?= number_format((float)$s['confidence'], 2) ?>)</small></b>
               <?php else: ?>
@@ -197,12 +208,12 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
     <div class="col-12 col-xl-4">
       <div class="panel">
         <h2>Status das fontes</h2>
-        <div class="bar-row"><span>Binance candles</span><b><?= srcBadge($sources['binance_candles']) ?></b></div>
+        <div class="bar-row"><span>Cotações da Binance</span><b><?= srcBadge($sources['binance_candles']) ?></b></div>
         <div class="bar-row"><span>Derivativos (funding/OI/L-S)</span><b><?= srcBadge($sources['derivatives']) ?></b></div>
         <div class="bar-row"><span>On-chain</span><b><?= srcBadge($sources['onchain'], 120) ?></b></div>
         <div class="bar-row"><span>Macro (FRED)</span><b><?= srcBadge($sources['macro_fred'], 1440) ?></b></div>
         <div class="bar-row"><span>Notícias</span><b><?= srcBadge($sources['news'], 120) ?></b></div>
-        <div class="bar-row"><span>LLM (OpenAI ok)</span><b><?= srcBadge($sources['llm'], 1440) ?></b></div>
+        <div class="bar-row"><span>Análise de texto (OpenAI)</span><b><?= srcBadge($sources['llm'], 1440) ?></b></div>
         <small class="text-muted d-block mt-2">"indisponível" = sem coleta real; nada é substituído por valor fictício.</small>
       </div>
     </div>
@@ -216,7 +227,7 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
           <p class="text-muted">Sem previsões avaliadas suficientes para calibração.</p>
         <?php else: ?>
           <table class="table table-sm">
-            <thead><tr><th>Faixa P(up)</th><th>n</th><th>Prev.</th><th>Real</th><th>Gap</th></tr></thead>
+            <thead><tr><th>Faixa de chance de alta</th><th>Amostras</th><th>Previsto</th><th>Real</th><th>Diferença</th></tr></thead>
             <tbody>
             <?php foreach ($calibration['bins'] as $b): ?>
               <tr><td><?= htmlspecialchars($b['bin']) ?></td><td><?= $b['n'] ?></td><td><?= number_format($b['avg_predicted_p_up'], 3) ?></td><td><?= number_format($b['observed_up_freq'], 3) ?></td><td><?= number_format($b['calibration_gap'], 3) ?></td></tr>
@@ -232,17 +243,17 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
         <h2>Histórico</h2>
         <div class="table-responsive">
           <table class="table table-sm align-middle">
-            <thead><tr><th>Quando</th><th>Horizonte</th><th>Previsto</th><th>Real</th><th>P(up)</th><th>Conf.</th><th>OK</th></tr></thead>
+            <thead><tr><th>Data e hora</th><th>Período</th><th>Previsto</th><th>Resultado</th><th>Chance de alta</th><th>Confiança</th><th>Acertou</th></tr></thead>
             <tbody>
             <?php foreach ($history as $h): ?>
               <tr>
                 <td><?= htmlspecialchars((string)$h['created_at']) ?></td>
                 <td><?= htmlspecialchars((string)$h['horizon']) ?></td>
-                <td><b><?= htmlspecialchars((string)$h['predicted_direction']) ?></b></td>
-                <td><?= $h['actual_direction'] === null ? '<span class="text-muted">pendente</span>' : htmlspecialchars((string)$h['actual_direction']) ?></td>
+                <td><b><?= directionPt((string)$h['predicted_direction']) ?></b></td>
+                <td><?= $h['actual_direction'] === null ? '<span class="text-muted">pendente</span>' : directionPt((string)$h['actual_direction']) ?></td>
                 <td><?= number_format((float)$h['probability_up'] * 100, 1) ?>%</td>
                 <td><?= number_format((float)$h['confidence'] * 100, 1) ?>%</td>
-                <td><?= $h['directional_hit'] === null ? '-' : ((int)$h['directional_hit'] ? 'sim' : 'não') ?></td>
+                <td><?= $h['directional_hit'] === null ? '—' : ((int)$h['directional_hit'] ? 'sim' : 'não') ?></td>
               </tr>
             <?php endforeach; ?>
             </tbody>
@@ -255,16 +266,16 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
   <section class="row g-3 mt-1">
     <div class="col-12 col-xl-7">
       <div class="panel">
-        <h2>Performance por módulo</h2>
+        <h2>Desempenho por módulo</h2>
         <?php if (!$perf): ?>
           <p class="text-muted">Sem desempenho por módulo ainda (requer previsões avaliadas).</p>
         <?php endif; ?>
         <div class="table-responsive">
           <table class="table table-sm">
-            <thead><tr><th>Módulo</th><th>Horizonte</th><th>Regime</th><th>n</th><th>Acc</th><th>Brier</th></tr></thead>
+            <thead><tr><th>Módulo</th><th>Período</th><th>Condição de mercado</th><th>Amostras</th><th>Precisão</th><th>Índice Brier</th></tr></thead>
             <tbody>
             <?php foreach ($perf as $p): ?>
-              <tr><td><?= htmlspecialchars((string)$p['module']) ?></td><td><?= htmlspecialchars((string)$p['horizon']) ?></td><td><?= htmlspecialchars((string)$p['regime']) ?></td><td><?= (int)$p['sample_size'] ?></td><td><?= number_format((float)$p['accuracy'], 3) ?></td><td><?= number_format((float)$p['brier_score'], 3) ?></td></tr>
+              <tr><td><?= htmlspecialchars((string)$p['module']) ?></td><td><?= htmlspecialchars((string)$p['horizon']) ?></td><td><?= htmlspecialchars(['TRENDING' => 'tendência', 'RANGING' => 'lateral', 'VOLATILE' => 'volátil'][$p['regime']] ?? (string)$p['regime']) ?></td><td><?= (int)$p['sample_size'] ?></td><td><?= number_format((float)$p['accuracy'], 3, ',', '.') ?></td><td><?= number_format((float)$p['brier_score'], 3, ',', '.') ?></td></tr>
             <?php endforeach; ?>
             </tbody>
           </table>

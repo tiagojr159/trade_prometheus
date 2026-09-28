@@ -6,6 +6,7 @@ require __DIR__ . '/bootstrap.php';
 use Prometheus\core\CronLock;
 use Prometheus\core\CronRunner;
 use Prometheus\core\Logger;
+use Prometheus\core\PaperTrader;
 use Prometheus\collectors\DerivativesCollector;
 use Prometheus\collectors\MacroCollector;
 use Prometheus\collectors\MarketCollector;
@@ -32,8 +33,8 @@ use Prometheus\prediction\PredictionService;
  * - Logs de início, conclusão (com duração) e falha de cada task.
  */
 
-$knownTasks = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize'];
-$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize'];
+$knownTasks = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade'];
+$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade'];
 $symbol = prometheus_config('default_symbol', 'BTCUSDT');
 
 $task = $argv[1] ?? $_GET['task'] ?? 'all';
@@ -68,6 +69,8 @@ $run = static function (string $name) use ($symbol) {
         case 'optimize':
             // Etapa 28 — otimização de pesos roda APÓS avaliação no ciclo completo.
             return (new WeightOptimizer())->optimize();
+        case 'paper_trade':
+            return (new PaperTrader())->run($symbol);
         default:
             return null;
     }

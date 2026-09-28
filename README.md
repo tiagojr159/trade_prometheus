@@ -5,6 +5,7 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 ## Instalação
 
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
+   Para instalar a simulação de operações, importe também `sql/migrations/010_paper_trading.sql` uma única vez.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`
@@ -37,6 +38,14 @@ Também é possível executar tudo:
 ```bash
 php cron.php all
 ```
+
+Para executar a simulação automática a cada minuto, adicione ao agendador do servidor:
+
+```bash
+* * * * * php /caminho/prometheus/cron.php paper_trade
+```
+
+As ordens são apenas simuladas e usam o saldo inicial de US$ 100. A estratégia compra ou vende quando a previsão de 15 minutos supera o limite de probabilidade configurado no simulador; um intervalo mínimo de 15 minutos evita operações repetidas. A frequência depende dos sinais disponíveis.
 
 ## Módulos
 
