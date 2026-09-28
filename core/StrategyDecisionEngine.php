@@ -40,6 +40,9 @@ final class StrategyDecisionEngine
     {
         if (!$fresh) return $this->result('NO_TRADE', $p, null, null, 0.0, ['STALE_DATA'], 'Dados insuficientes ou desatualizados.');
         if (!$p || $p['predicted_direction'] === 'INDETERMINATE') return $this->result('NO_TRADE', $p, null, null, 0.0, ['INDETERMINATE'], 'Sem direção definida para a previsão de 15 minutos.');
+        if (!empty($config['avoid_volatile']) && in_array(strtoupper((string)($p['regime']??'')), ['VOLATILE','HIGH_VOLATILITY'], true)) {
+            return $this->result('NO_TRADE', $p, null, null, 0.0, ['REGIME_FILTER'], 'Regime de volatilidade alta bloqueado pela configuração de risco.');
+        }
         if ((float)$p['confidence'] < (float)$config['min_confidence']) return $this->result('NO_TRADE', $p, null, null, 0.0, ['LOW_CONFIDENCE'], 'Confiança abaixo do limite configurado.');
 
         $score = 0.0; $weightSum = 0.0; $availableDirections = [];

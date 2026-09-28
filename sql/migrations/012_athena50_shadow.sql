@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS athena50_shadow_predictions (
   group_summary JSON NOT NULL,
   group_ablation_predictions JSON NULL,
   group_ablation_results JSON NULL,
+  candidate_predictions JSON NULL,
+  candidate_results JSON NULL,
   market_data_id BIGINT UNSIGNED NULL,
   candle_timestamp DATETIME NULL,
   actual_direction ENUM('UP','DOWN','FLAT') NULL,

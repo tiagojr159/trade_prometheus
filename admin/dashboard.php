@@ -62,7 +62,7 @@ function srcBadge(?array $row, int $staleMinutes = 30): string
 
 function directionPt(?string $direction): string
 {
-    return ['UP' => 'ALTA', 'DOWN' => 'BAIXA', 'FLAT' => 'ESTÁVEL', 'INDETERMINATE' => 'INDEFINIDA'][$direction ?? ''] ?? ($direction ?? '—');
+    return ['UP' => 'ALTA', 'DOWN' => 'BAIXA', 'FLAT' => 'ESTÁVEL', 'INDETERMINATE' => 'INDEFINIDA', 'SIDEWAYS' => 'LATERAL (LEGADO)'][$direction ?? ''] ?? ($direction ?? '—');
 }
 
 function signalStatusPt(string $status): string

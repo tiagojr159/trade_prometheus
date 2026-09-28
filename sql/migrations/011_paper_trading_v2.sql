@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS paper_trading_config (
   initial_balance DECIMAL(18,8) NOT NULL DEFAULT 100,
   allocation_pct DECIMAL(6,3) NOT NULL DEFAULT 25,
   allow_short TINYINT(1) NOT NULL DEFAULT 1,
+  avoid_volatile TINYINT(1) NOT NULL DEFAULT 1,
   fee_pct DECIMAL(8,5) NOT NULL DEFAULT 0.10,
   slippage_pct DECIMAL(8,5) NOT NULL DEFAULT 0.02,
   min_edge_pct DECIMAL(8,5) NOT NULL DEFAULT 0.03,

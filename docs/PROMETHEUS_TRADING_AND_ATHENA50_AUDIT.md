@@ -1,55 +1,72 @@
-# Auditoria, paper trading V2 e ATHENA-50
+# PROMETHEUS — paper trading V2, ATHENA-50 e validação
 
-Auditoria dos dois projetos locais concluída antes de alterar o código, em 28/09/2026. PROMETHEUS está em `C:\xampp\htdocs\trade_prometheus`; o projeto Bitcoin Pulse/`trade_indicador` fica em `C:\xampp\htdocs\trade_indicador`, fora da raiz gravável desta sessão e não foi alterado. Nenhuma corretora é integrada e nenhuma ordem real é enviada.
+Auditoria dos dois projetos feita antes das alterações, em 28/09/2026. PROMETHEUS está em `C:\xampp\htdocs\trade_prometheus`; Bitcoin Pulse/ `trade_indicador` está em `C:\xampp\htdocs\trade_indicador`, fora da raiz autorizada para escrita nesta sessão. Nenhuma ordem real é enviada e nenhuma corretora é integrada.
 
-## Resultado da comparação
+## 1. Auditoria e alterações
 
-| Dimensão | PROMETHEUS | Bitcoin Pulse / `trade_indicador` | Implicação |
-|---|---|---|---|
-| Modelagem | Seis módulos combinados pelo `EnsembleEngine`; previsões probabilísticas UP/DOWN e pesos persistidos | 50 indicadores em cinco grupos, scores discretos -2..+2, mais um preditor por analogia | Scores dos projetos não são probabilidades equivalentes |
-| Fontes | Candles, sentimento/notícias, on-chain, derivativos, macro e relações de mercado | Binance Spot, derivativos USD-M, indicadores técnicos e snapshots | Há sobreposição substancial em indicadores técnicos e derivativos |
-| Execução existente | Paper trader antigo long-only, sem custos e sem ledger completo por decisão | `trade_policy.php` e `trade_exec.php` simulam custos, limiares, gestão de posição e validação temporal | V2 separa diagnóstico direcional do teste de rentabilidade |
-| Histórico | Candles com metadados temporais; `prediction_results` separado da previsão | Histórico resumido de sinais; sem raw values/lineage temporal completa por feature | A junção histórica dos dois projetos não é evidência comparável suficiente |
+| Item | Antes | Alteração | Arquivo | Teste | Resultado | Status |
+|---|---|---|---|---|---|---|
+| Paper trader | Long-only, thresholds rígidos, sem custos completos, short ou ledger de NO_TRADE | Dois modos, short sintético sem alavancagem, custos, decisão idempotente por modo/previsão, PnL e equity limitados a zero | `core/PaperTrader.php`, migration 011 | 23 testes, lint e execuções integrativas | Com candles atualizados, ambos os modos ficaram ativos; não havia previsão nova elegível na primeira chamada; nenhuma ordem foi criada | 🟡 funcional / aguardando decisões elegíveis |
+| Heartbeat e cron | Task `paper_trade` presente no código; execução do host desconhecida | Heartbeat com início/fim, previsão, decisão, motivo, erro e próxima avaliação; alerta após 5 minutos | `core/PaperTrader.php`, `admin/simulation.php` | teste de status stale e inspeção do dispatcher | Não foi possível observar o cron remoto | ⚪ não testável aqui |
+| Preço e lineage | Trader antigo não guardava a candle usada | Exige candle fechado, recente e temporalmente disponível; decisão, ordem e equity guardam ID, close time, available_at e ingested_at | `core/PaperTrader.php`, migration 011 | teste point-in-time e inspeção de schema | Candle aberto/futuro é rejeitado; ingestão stale interrompe a execução | 🟢 funcional em código |
+| StrategyDecisionEngine | Decisão de ordem misturada ao preditor | Motor separado, concordância de horizontes, custos e pelo menos 30 resultados anteriores disponíveis em T | `core/StrategyDecisionEngine.php` | casos de concordância, custos e amostra mínima | Regra experimental; não calibrada por walk-forward | 🟡 funcional / sem evidência |
+| Tela | Ausência de decisão e comparação suficiente | Modos, saldo, posição, custos, heartbeat, decisão, histórico, curva e pesquisa | `admin/simulation.php` | lint; rotas PHP locais conferidas | Migrations instaladas; ainda requer upload do código para abrir no host | 🟡 código pronto / não publicado |
+| ATHENA-50 shadow | Scores compactados sem raw features/lineage suficientes para replay | Grava features disponíveis, cobertura, regime, modelos candidatos, ablações por grupo e scorecard após avaliação | `prediction/Athena50Shadow.php`, migration 012 | filtro temporal, scoring de ablação e teste sintético de correlação | Quatro previsões novas (IDs 192–195) produziram snapshots `READY_PARTIAL`, 43/50 features e 15 candidatos cada; alvos ainda não maturaram | 🟡 funcional / aguardando avaliação |
+| Tradução | Dashboard já continha português, mas mostrava rótulo legado SIDEWAYS | Localizado como “LATERAL (LEGADO)”; simulação também traduz esse rótulo | `admin/dashboard.php`, `admin/simulation.php` | lint | Não foi possível validar visualmente o host que retorna 404 | 🟡 código revisado / sem QA remoto |
+| Credenciais | DB_USER/DB_PASS na configuração local e chaves em arquivo local do PROMETHEUS | Arquivos de configuração estão cobertos pelo .gitignore e não aparecem como arquivos versionados; DB do PROMETHEUS lê getenv | `.gitignore`, `config/database.php`, `config/api_keys.php`, projeto antigo | `git check-ignore` e `git ls-files`; auditoria sem imprimir valores | Segredos permanecem em arquivos locais ignorados; nenhum valor foi logado ou copiado | 🟢 conforme configuração local |
 
-O inventário dos 50 indicadores, equivalências, duplicações e disponibilidade de dados está em [INDICATOR_50_MAPPING.md](INDICATOR_50_MAPPING.md).
+O inventário de equivalência, redundância e fontes dos 50 indicadores está em [INDICATOR_50_MAPPING.md](INDICATOR_50_MAPPING.md). Mantive os seis módulos existentes.
 
-## Alterações implementadas
+## 2. Métricas preditivas disponíveis
 
-| Item | Implementação | Evidência / situação |
-|---|---|---|
-| Dois modos independentes | Contas DIRECTIONAL e STRATEGY com US$ 100 iniciais; posições LONG/SHORT sintéticas sem alavancagem; configuração de risco, taxa e slippage | Migração `011_paper_trading_v2.sql`; precisa ser aplicada no banco do host |
-| Decisão auditável e automática | O cron existente executa os dois modos; decisão por previsão idempotente; grava também HOLD/NO_TRADE, proveniência, ordem, fill, custo, PnL, equity e heartbeat | `core/PaperTrader.php`; cron remoto não observável nesta sessão |
-| Estratégia de rentabilidade | `StrategyDecisionEngine` separado do preditor; exige concordância de horizontes, pelo menos 30 resultados anteriores e expectativa bruta estimada maior que custos mais margem | Regras experimentais ainda sem calibração walk-forward; não constituem recomendação nem prova de lucro |
-| Tela | Alternância de modos, saldo/equity, posição, PnL, previsões e decisão, sinais/pesos do ensemble, curva contra buy-and-hold, configurações, histórico e trades encerrados | `admin/simulation.php`; requer migrations, sessão de administrador e execução do cron |
-| Shadow ATHENA-50 | Registro prospectivo independente do ensemble, vetor e cobertura das features disponíveis, filtro point-in-time e scorecard após avaliação | Migração `012_athena50_shadow.sql`; não disponíveis: taker buy, book, basis e top-trader ratio por falta de snapshots temporais compatíveis |
-| Mapa e relatório | Equivalência entre indicadores e restrições de dados | `docs/INDICATOR_50_MAPPING.md` e este relatório |
+Recalculadas por consulta somente de leitura ao banco configurado. A acurácia abaixo usa apenas previsões UP/DOWN e alvos UP/DOWN, excluindo SIDEWAYS e INDETERMINATE. Brier e LogLoss pontuam probabilidades para todos os alvos UP/DOWN do horizonte; por isso seus N são diferentes. São estatísticas descritivas dos registros existentes, não walk-forward.
 
-## Testes realizados
+| Modelo | Horizonte | N direcional (N prob.) | Accuracy | Brier | LogLoss |
+|---|---|---:|---:|---:|---:|
+| PROMETHEUS atual (A) | 15m | 28 (42) | 25,00% | 0,2616 | 0,7163 |
+| PROMETHEUS atual (A) | 1h | 34 (57) | 32,35% | 0,2579 | 0,7090 |
+| PROMETHEUS atual (A) | 4h | 26 (39) | 34,62% | 0,2581 | 0,7095 |
+| PROMETHEUS atual (A) | 24h | 8 (18) | 0,00% | 0,2619 | 0,7170 |
+| PROMETHEUS com ATHENA-50 substituindo ATHENA (B) | 15m / 1h / 4h / 24h | — | — | — | — |
+| PROMETHEUS + informação ATHENA-50 validada (C) | 15m / 1h / 4h / 24h | — | — | — | — |
+| ATHENA clássico isolado (D) | 15m / 1h / 4h / 24h | — | — | — | — |
+| ATHENA-50 isolado (E) | 15m / 1h / 4h / 24h | — | — | — | — |
 
-- `admin/paper_trading_v2_tests.php`: 14 verificações aprovadas sobre LONG/SHORT/reversão, sinal indeterminado, dados velhos/futuros, concordância, custos, mínimo de histórico, unicidade e filtro temporal do shadow.
-- `trade_indicador/tests/previsao_motor_test.php`: suíte existente aprovada com 447 linhas de dados fornecidas; inclui preservação contra vazamento de futuro, abstinência sem histórico, limites e validações temporais. O projeto externo foi apenas lido/executado.
-- Lint PHP aprovado em `core/PaperTrader.php`, `core/StrategyDecisionEngine.php`, `prediction/Athena50Shadow.php`, `prediction/PredictionService.php`, `evaluation/PredictionEvaluator.php`, `admin/simulation.php` e `cron.php`.
-- `git diff --check` não apontou erros de whitespace; exibiu apenas avisos de conversão de final de linha CRLF.
+B, D e E passam a ser registrados prospectivamente agora que as migrations estão instaladas, quando houver features elegíveis. C fica deliberadamente sem modelo até que uma informação incremental seja validada. Os snapshots 192–195 têm `READY_PARTIAL` (43/50 features), 15 candidatos e ainda nenhum resultado avaliado. O dashboard separa horizontes e regimes e mostra accuracy, Brier e LogLoss; métricas por regime aguardam amostra.
 
-## Snapshot somente leitura do banco configurado
+O histórico contém rótulos SIDEWAYS e INDETERMINATE. As acurácias desta tabela foram recalculadas excluindo esses rótulos, sem editar os resultados históricos. Chamadas UP foram 0 corretas em todos os horizontes; no histórico o modo direcional favoreceu DOWN. Não se deve interpretar os números como evidência robusta: há apenas 191 previsões totais, 156 resultados e poucos dias; previsões também se sobrepõem no tempo.
 
-O banco configurado aponta para um host não local, então nenhuma migration nem escrita foi executada nele. Na consulta de 28/09/2026 havia 191 previsões, 156 resultados avaliados e 13.250 candles; a tabela shadow e as tabelas paper V2 não existiam. O último `close_time` de candle era 25/09/2026 20:59:59 e o último `ingested_at` era 25/09/2026 03:44:50, ambos atrasados para operar em 28/09. O V2 recusa execução com preço desatualizado.
+## 3. Métricas de trading
 
-Resultados descritivos já armazenados, versão 2; acurácia usa apenas resultados UP/DOWN e não é uma simulação de rentabilidade:
+| Estratégia | N trades | Retorno líquido | Max drawdown | Profit factor | Win rate | Custos |
+|---|---:|---:|---:|---:|---:|---:|
+| DIRECTIONAL paper | 0 | — | — | — | — | — |
+| STRATEGY paper | 0 | — | — | — | — | — |
+| BUY & HOLD no mesmo período | não calculado | — | — | — | — | — |
+| ALWAYS_LONG | não calculado | — | — | — | — | — |
+| RANDOM_DIRECTION, seed fixa | não calculado | — | — | — | — | — |
 
-| Horizonte | N direcional | Acurácia | Brier médio |
-|---|---:|---:|---:|
-| 15m | 39 | 41,03% | 0,2616 |
-| 1h | 54 | 48,15% | 0,2579 |
-| 4h | 36 | 52,78% | 0,2581 |
-| 24h | 11 | 27,27% | 0,2619 |
+O dashboard agora reprecifica trades já registrados em custo LOW (0,5×), NORMAL (1×) e STRESS (2,5×), sem alterar o ledger. A integração criou uma entrada SHORT sintética em DIRECTIONAL; ainda não há trades V2 fechados para preencher métricas de retorno. As métricas BUY & HOLD, ALWAYS_LONG e RANDOM_DIRECTION não foram calculadas. A matriz de alocação 10%/25%/50%, regras alternativas de saída e walk-forward de política de trading com separação train/validation/test continuam pendentes; não devem ser inferidas do backtest direcional do motor.
 
-As previsões se sobrepõem no tempo, as amostras são pequenas e os intervalos disponíveis cobrem poucos dias. Esses números são uma leitura descritiva, não validação walk-forward, não provam rentabilidade e não permitem comparar ATHENA-50, cuja coleta ainda não foi instalada.
+## 4. ATHENA-50 e ablação
 
-## O que ainda não se pode concluir
+| Grupo | Incremento medido | Amostra pareada | Status |
+|---|---|---:|---|
+| Tendência | — | 0 | 🟣 aguardando histórico |
+| Momentum | — | 0 | 🟣 aguardando histórico |
+| Volume/fluxo | — | 0 | 🟣 aguardando histórico |
+| Volatilidade/estrutura | — | 0 | 🟣 aguardando histórico |
+| Microestrutura/derivativos | — | 0 | 🟣 aguardando histórico |
+| Módulos PROMETHEUS sem ATHENA/HERMES/POSEIDON/HEPHAESTUS/CRONOS/MARKET_RELATIONS | — | 0 | 🟣 aguardando histórico |
 
-O arquivo de dados fornecido para Bitcoin Pulse cobre aproximadamente 10,54 horas; suas métricas direcionais amostrais variam por horizonte e não são comparáveis à validação do PROMETHEUS. Os snapshots antigos não guardam todas as features brutas e seus instantes de disponibilidade. Por isso não há estimativa honesta de retorno, Brier/LogLoss ATHENA-50 vs clássico, walk-forward, ablation ou stress de custos. O shadow precisa acumular previsões prospectivas avaliadas antes que essas métricas possam ser reportadas.
+Para cada shadow elegível, o sistema grava modelos candidatos nos mesmos timestamps/alvos, leave-one-module-out e leave-one-group-out. O analisador de correlação detecta features constantes e pares com |r| ≥ 0,95 a partir de pelo menos 30 observações pareadas; apenas informa redundância e não remove feature. A disponibilidade retrospectiva dos dados do Bitcoin Pulse impede uma comparação histórica honesta. Taker buy, order book, basis e top-trader ratio não têm lineage compatível no PROMETHEUS atual; proxies técnicos ficam identificados como tais.
 
-As migrations 011 e 012 ainda precisam ser aplicadas no MySQL do host. A tela não consegue confirmar o estado do banco nem a instalação do cron remoto a partir deste workspace. Após aplicar as migrations, habilitar os modos e confirmar o cron, o dashboard expõe o heartbeat para observar as execuções.
+## 5. Estado do host e próximos bloqueios
 
-**Conclusão:** código paper-only implementado, mas a lucratividade da estratégia e o valor incremental ATHENA-50 permanecem **não comprovados**. O projeto externo não foi modificado, pois está fora da raiz autorizada para escrita.
+Na consulta inicial ao banco configurado, o destino era não local, havia 13.250 candles e as tabelas paper/shadow não existiam. As migrations 011 e 012 foram então aplicadas com sucesso; agora existem as duas contas paper iniciais e todas as tabelas V2/shadow. A coleta de mercado `cron.php market` foi executada com sucesso para 1m/5m/15m/1h/4h/1d. Em seguida `cron.php predictions` criou as previsões 192–195 e seus snapshots ATHENA-50. Uma execução manual de `cron.php paper_trade` processou a previsão 192 nos dois modos: DIRECTIONAL abriu SHORT sintético e STRATEGY registrou `NO_TRADE` com `HORIZON_DISAGREEMENT`. O heartbeat ficou ACTIVE em ambos; existe uma ordem simulada e nenhuma ordem real.
+
+Os arquivos locais `simulation.php` e `performance.php` redirecionam para as telas administrativas. O 404 mostrado no navegador é do host, que ainda precisa receber os arquivos atualizados. Falta publicar os arquivos e confirmar cron a cada minuto com `php cron.php paper_trade`; o agendamento remoto não foi verificável. O host do usuário não pode ser alterado a partir deste workspace.
+
+Testes locais: 23 verificações do paper/shadow/scoring; suíte existente do projeto Bitcoin Pulse aprovada com 447 linhas e testes anti-look-ahead; lint PHP nos arquivos alterados. Execução integrativa inicial: ambos os modos marcaram ERROR quando os candles estavam stale e não criaram ordens. Após coleta, os heartbeats voltaram a ACTIVE. A execução da tarefa `paper_trade` confirmou o comportamento por modo: SHORT simulado em DIRECTIONAL e `NO_TRADE` explicável em STRATEGY. O banco contém quatro snapshots shadow parciais sem resultado maturado. As migrations foram gravadas no banco remoto; previsões/resultados históricos não foram reescritos.
+
+**Conclusão:** a implementação local aumenta a observabilidade e iniciou as comparações prospectivas, e uma execução da rotina comprovou SHORT simulado no modo DIRECTIONAL e `NO_TRADE` explicado no STRATEGY. Ainda não há evidência de rentabilidade ou ganho ATHENA-50: as previsões novas não maturaram e o walk-forward da política de trading continua pendente. O host continua retornando 404 até receber os arquivos locais; a execução automática recorrente do cron no host também precisa ser confirmada. A análise de credenciais foi somente leitura e encontrou arquivos ignorados pelo Git; nenhuma credencial foi publicada.

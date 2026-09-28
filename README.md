@@ -5,8 +5,9 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 ## Instalação
 
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
-   Para instalar a simulação de operações, importe também `sql/migrations/010_paper_trading.sql` uma única vez.
-   Para paper trading V2 e shadow ATHENA-50, importe em sequência `011_paper_trading_v2.sql` e `012_athena50_shadow.sql`.
+   Para bancos existentes criados antes da lineage temporal, aplique `sql/migrations/008_temporal_lineage.sql`.
+   Para instalar a simulação antiga, importe `sql/migrations/010_paper_trading.sql` uma única vez.
+   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`

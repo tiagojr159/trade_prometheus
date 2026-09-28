@@ -51,7 +51,7 @@ final class PaperTrader
             if (!$market || !$this->isFreshMarket($market)) throw new \RuntimeException('Sem candle fechado, recente e disponível para execução simulada.');
 
             $predictions = Database::fetchAll(
-                'SELECT p.* FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
+                'SELECT p.*,IF(p.created_at>=DATE_SUB(NOW(),INTERVAL 30 MINUTE),1,0) AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
                  WHERE p.symbol=? AND p.horizon="15m" AND d.id IS NULL AND p.created_at<=NOW()
                    AND p.created_at>=DATE_SUB(NOW(), INTERVAL 24 HOUR)
                  ORDER BY p.created_at ASC,p.id ASC LIMIT 100',
@@ -60,12 +60,8 @@ final class PaperTrader
             $processed = 0; $lastDecision = null; $lastPrediction = null; $lastReason = null;
             foreach ($predictions as $p) {
                 $before = $account['position_side'];
-                $freshPrediction = strtotime((string)$p['created_at']) >= time() - 30 * 60
-                    && strtotime((string)$p['created_at']) <= time();
-                $freshPrice = strtotime((string)$market['close_time']) <= time()
-                    && strtotime((string)$market['ingested_at']) <= time()
-                    && (empty($market['available_at']) || strtotime((string)$market['available_at']) <= time());
-                $fresh = $freshPrediction && $freshPrice && (float)$market['close_price'] > 0;
+                $freshPrediction = (int)($p['is_fresh']??0)===1;
+                $fresh = $freshPrediction && (float)$market['close_price'] > 0;
                 $horizons = $mode === 'STRATEGY' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
                 $evidence = $mode === 'STRATEGY' ? $this->historicalMagnitude($pdo, $p) : [];
                 $decision = $this->decisionEngine->decide($mode, $p, $horizons, $account, $config, $evidence, $fresh);
@@ -89,6 +85,8 @@ final class PaperTrader
                 }
 
                 $regime = Database::fetch('SELECT regime,confidence FROM market_regimes WHERE created_at<=? ORDER BY created_at DESC,id DESC LIMIT 1', [$p['created_at']]);
+                $p['regime']=(string)($regime['regime']??$p['regime']);
+                $p['regime_confidence']=$regime['confidence']??null;
                 $estimatedCost = (float)$decision['estimated_cost_pct'];
                 $after = $this->targetSide((string)$decision['action'], $before);
                 $insertDecision = $pdo->prepare(

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Prometheus\prediction;
 
 use Prometheus\core\Database;
+use Prometheus\core\DirectionPolicy;
 use Prometheus\modules\AthenaTechnical;
 
 /** Experimental 50-feature shadow. It never contributes to the production ensemble. */
@@ -17,6 +18,7 @@ final class Athena50Shadow
         $rows=self::filterPointInTimeRows($rows,$predictionCreatedAt,$asOfUtc);
         $rows=array_reverse($rows);$classic=null;
         foreach($classicSignals as $signal)if(($signal['module']??'')==='ATHENA'){$classic=$signal;break;}
+        $ablationPredictions=[];
         if(count($rows)<60){$features=$this->emptyFeatures('Menos de 60 candles fechados disponíveis no instante da previsão.');$groups=[];$signal=null;$confidence=null;$pUp=null;$status='INSUFFICIENT_DATA';}
         else{
             $features=$this->technicalFeatures($rows);
@@ -24,11 +26,13 @@ final class Athena50Shadow
             [$signal,$confidence,$groups,$count]=$this->aggregate($features);
             $status=$count>=30&&count(array_filter($groups,static fn($g)=>$g['available']>0))>=3?($count===50?'READY':'READY_PARTIAL'):'INSUFFICIENT_DATA';
             $pUp=(new ProbabilityCalculator())->calculate((float)$signal,(float)$confidence)['up'];
-            if($status==='INSUFFICIENT_DATA'){$signal=null;$confidence=null;$pUp=null;}
+            if($status==='INSUFFICIENT_DATA'){$signal=null;$confidence=null;$pUp=null;}else{$ablationPredictions=$this->groupAblations($features);}
         }
         $last=$rows?end($rows):null;$count=count(array_filter($features,static fn($f)=>$f['status']==='AVAILABLE'));
-        Database::execute('INSERT INTO athena50_shadow_predictions (prediction_id,symbol,horizon,regime,prediction_created_at,model_status,classic_signal,classic_confidence,shadow_signal,shadow_confidence,shadow_probability_up,feature_count,feature_total,feature_vector,group_summary,market_data_id,candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE regime=VALUES(regime),model_status=VALUES(model_status),classic_signal=VALUES(classic_signal),classic_confidence=VALUES(classic_confidence),shadow_signal=VALUES(shadow_signal),shadow_confidence=VALUES(shadow_confidence),shadow_probability_up=VALUES(shadow_probability_up),feature_count=VALUES(feature_count),feature_vector=VALUES(feature_vector),group_summary=VALUES(group_summary),market_data_id=VALUES(market_data_id),candle_timestamp=VALUES(candle_timestamp)',[
-            $predictionId,$symbol,$horizon,$regime,$predictionCreatedAt,$status,$classic['value']??null,$classic['confidence']??null,$signal,$confidence,$pUp,$count,50,json_encode($features,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),json_encode($groups,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),$last['id']??null,$last['close_time']??null
+        $baseline=Database::fetch('SELECT probability_up,ensemble_signal,confidence,weights_json FROM predictions WHERE id=?',[$predictionId])?:[];
+        $candidatePredictions=self::candidateProbabilities($classicSignals,(array)(json_decode((string)($baseline['weights_json']??''),true)?:[]),$baseline,$signal,$confidence,$pUp,$ablationPredictions);
+        Database::execute('INSERT INTO athena50_shadow_predictions (prediction_id,symbol,horizon,regime,prediction_created_at,model_status,classic_signal,classic_confidence,shadow_signal,shadow_confidence,shadow_probability_up,feature_count,feature_total,feature_vector,group_summary,group_ablation_predictions,candidate_predictions,market_data_id,candle_timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE regime=VALUES(regime),model_status=VALUES(model_status),classic_signal=VALUES(classic_signal),classic_confidence=VALUES(classic_confidence),shadow_signal=VALUES(shadow_signal),shadow_confidence=VALUES(shadow_confidence),shadow_probability_up=VALUES(shadow_probability_up),feature_count=VALUES(feature_count),feature_vector=VALUES(feature_vector),group_summary=VALUES(group_summary),group_ablation_predictions=VALUES(group_ablation_predictions),candidate_predictions=VALUES(candidate_predictions),market_data_id=VALUES(market_data_id),candle_timestamp=VALUES(candle_timestamp)',[
+            $predictionId,$symbol,$horizon,$regime,$predictionCreatedAt,$status,$classic['value']??null,$classic['confidence']??null,$signal,$confidence,$pUp,$count,50,json_encode($features,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),json_encode($groups,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),json_encode($ablationPredictions,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),json_encode($candidatePredictions,JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR),$last['id']??null,$last['close_time']??null
         ]);
         return ['status'=>$status,'feature_count'=>$count,'signal'=>$signal,'confidence'=>$confidence];
     }
@@ -41,6 +45,52 @@ final class Athena50Shadow
             if(!empty($row['available_at'])&&($row['available_at']>$cutoffUtc||$row['ingested_at']<$row['available_at']))return false;
             return true;
         }));
+    }
+
+    public static function candidateProbabilities(array $signals,array $weights,array $baseline,?float $shadowSignal,?float $shadowConfidence,?float $shadowP,array $groupAblations): array
+    {
+        $out=[];
+        if(isset($baseline['probability_up']))$out['PROMETHEUS_CURRENT']=['probability_up'=>(float)$baseline['probability_up']];
+        $classic=null;foreach($signals as $signal)if(($signal['module']??'')==='ATHENA'){$classic=$signal;break;}
+        if($classic){$out['ATHENA_CLASSIC_ONLY']=['probability_up'=>(new ProbabilityCalculator())->calculate((float)$classic['value'],(float)$classic['confidence'])['up']];}
+        if($shadowP!==null&&$shadowSignal!==null&&$shadowConfidence!==null){
+            $out['ATHENA_50_ONLY']=['probability_up'=>$shadowP];
+            $out['PROMETHEUS_ATHENA50_REPLACE']=['probability_up'=>self::ensembleProbability($signals,$weights,[],['value'=>$shadowSignal,'confidence'=>$shadowConfidence])];
+            foreach(['ATHENA','HERMES','POSEIDON','HEPHAESTUS','CRONOS','MARKET_RELATIONS'] as $module){
+                $out['PROMETHEUS_MINUS_'.$module]=['probability_up'=>self::ensembleProbability($signals,$weights,[$module],null)];
+            }
+            foreach($groupAblations as $group=>$metrics){$out['ATHENA50_MINUS_'.$group]=['probability_up'=>(float)$metrics['probability_up']];}
+        }
+        return array_filter($out,static fn($v)=>isset($v['probability_up'])&&is_finite((float)$v['probability_up']));
+    }
+
+    private static function ensembleProbability(array $signals,array $weights,array $removed,?array $replacement): float
+    {
+        $weighted=0.0;$weightSum=0.0;$confidenceSum=0.0;$present=0;
+        foreach($signals as $signal){
+            $module=(string)($signal['module']??'');$status=(string)($signal['status']??($signal['metadata']['status']??'AVAILABLE'));
+            if(in_array($module,$removed,true)||!in_array($status,['AVAILABLE','STALE'],true))continue;
+            if($module==='ATHENA'&&$replacement!==null){$value=(float)$replacement['value'];$confidence=(float)$replacement['confidence'];}
+            else{$value=(float)($signal['value']??0);$confidence=(float)($signal['confidence']??0);}
+            $effective=(float)($weights[$module]??1.0)*max(.05,$confidence);$weighted+=$value*$effective;$weightSum+=$effective;$confidenceSum+=$confidence;$present++;
+        }
+        if($weightSum<=0)return .5;
+        $signal=max(-1.0,min(1.0,$weighted/$weightSum));$coverage=$present/6;
+        $confidence=max(.05,min(1.0,($confidenceSum/$present)*(.5+.5*$coverage)));
+        return (new ProbabilityCalculator())->calculate($signal,$confidence)['up'];
+    }
+
+    public static function evaluateGroupAblations(array $predictions,string $actual): array
+    {
+        $results=[];
+        foreach($predictions as $group=>$metrics){
+            if(!isset($metrics['probability_up']))continue;
+            $p=max(.005,min(.995,(float)$metrics['probability_up']));
+            $direction=$p>.5?'UP':($p<.5?'DOWN':'INDETERMINATE');
+            $results[$group]=['hit'=>DirectionPolicy::hit($direction,$actual),'brier'=>DirectionPolicy::brier($p,$actual),
+                'logloss'=>$actual==='UP'?-log($p):($actual==='DOWN'?-log(1-$p):null)];
+        }
+        return $results;
     }
 
     private function technicalFeatures(array $rows): array
@@ -112,6 +162,21 @@ final class Athena50Shadow
         $signal=$groupMeans?array_sum($groupMeans)/count($groupMeans):0.0;$coverage=count(array_filter($features,static fn($f)=>$f['status']==='AVAILABLE'))/50;
         $dispersion=count($groupMeans)>1?$this->std($groupMeans):0.0;$confidence=max(.05,min(.9,$coverage*(.45+.45*abs($signal)+.10*(1-$dispersion))));
         return [max(-1,min(1,$signal)),$confidence,$summary,count(array_filter($features,static fn($f)=>$f['status']==='AVAILABLE'))];
+    }
+
+    private function groupAblations(array $features): array
+    {
+        $values=['TENDENCY'=>[],'MOMENTUM'=>[],'VOLUME_FLOW'=>[],'VOLATILITY_STRUCTURE'=>[],'MICRO_DERIVATIVES'=>[]];
+        foreach($features as $name=>$feature){if(($feature['status']??'')!=='AVAILABLE')continue;$values[$this->groupFor($name)][]=(float)$feature['normalized_value'];}
+        $means=[];foreach($values as $group=>$scores)if($scores)$means[$group]=array_sum($scores)/count($scores);
+        $out=[];$coverage=count(array_filter($features,static fn($f)=>($f['status']??'')==='AVAILABLE'))/50;
+        foreach(array_keys($values) as $removed){$remaining=$means;unset($remaining[$removed]);if(count($remaining)<3)continue;
+            $signal=array_sum($remaining)/count($remaining);$dispersion=$this->std(array_values($remaining));
+            $confidence=max(.05,min(.9,$coverage*(.45+.45*abs($signal)+.10*(1-$dispersion))));
+            $probability=(new ProbabilityCalculator())->calculate($signal,$confidence)['up'];
+            $out[$removed]=['signal'=>$signal,'confidence'=>$confidence,'probability_up'=>$probability,'groups_used'=>count($remaining)];
+        }
+        return $out;
     }
 
     private function groupFor(string $name): string

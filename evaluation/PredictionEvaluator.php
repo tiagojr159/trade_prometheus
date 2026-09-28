@@ -79,13 +79,23 @@ final class PredictionEvaluator
 
             // Prospective-only ATHENA-50 shadow scorecard; failures never alter the canonical result.
             try {
-                $shadow = Database::fetch('SELECT shadow_probability_up FROM athena50_shadow_predictions WHERE prediction_id=? AND model_status IN ("READY","READY_PARTIAL")', [$p['id']]);
+                $shadow = Database::fetch('SELECT shadow_probability_up,group_ablation_predictions,candidate_predictions FROM athena50_shadow_predictions WHERE prediction_id=? AND model_status IN ("READY","READY_PARTIAL")', [$p['id']]);
                 if ($shadow && $shadow['shadow_probability_up'] !== null) {
                     $shadowP = (float)$shadow['shadow_probability_up'];
                     $shadowDirection = $shadowP > 0.5 ? 'UP' : ($shadowP < 0.5 ? 'DOWN' : 'INDETERMINATE');
+                    $ablationPredictions = json_decode((string)($shadow['group_ablation_predictions'] ?? ''), true) ?: [];
+                    $ablationResults = \Prometheus\prediction\Athena50Shadow::evaluateGroupAblations($ablationPredictions, (string)$actual);
+                    $candidatePredictions = json_decode((string)($shadow['candidate_predictions'] ?? ''), true) ?: [];
+                    $candidateResults = [];
+                    foreach ($candidatePredictions as $model => $candidate) {
+                        $candidateP = max(.005, min(.995, (float)$candidate['probability_up']));
+                        $candidateDirection = $candidateP > .5 ? 'UP' : ($candidateP < .5 ? 'DOWN' : 'INDETERMINATE');
+                        $candidateResults[$model] = ['hit'=>DirectionPolicy::hit($candidateDirection,$actual), 'brier'=>DirectionPolicy::brier($candidateP,$actual),
+                            'logloss'=>$actual==='UP'?-log($candidateP):($actual==='DOWN'?-log(1-$candidateP):null)];
+                    }
                     Database::execute(
-                        'UPDATE athena50_shadow_predictions SET actual_direction=?,classic_hit=?,shadow_hit=?,classic_brier=?,shadow_brier=?,evaluated_at=NOW() WHERE prediction_id=?',
-                        [$actual, $hit, DirectionPolicy::hit($shadowDirection, $actual), $brier, DirectionPolicy::brier($shadowP, $actual), $p['id']]
+                        'UPDATE athena50_shadow_predictions SET actual_direction=?,classic_hit=?,shadow_hit=?,classic_brier=?,shadow_brier=?,group_ablation_results=?,candidate_results=?,evaluated_at=NOW() WHERE prediction_id=?',
+                        [$actual, $hit, DirectionPolicy::hit($shadowDirection, $actual), $brier, DirectionPolicy::brier($shadowP, $actual), json_encode($ablationResults, JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR), json_encode($candidateResults, JSON_UNESCAPED_UNICODE|JSON_PARTIAL_OUTPUT_ON_ERROR), $p['id']]
                     );
                 }
             } catch (\Throwable $e) {

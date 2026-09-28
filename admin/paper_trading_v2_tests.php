@@ -3,11 +3,21 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/core/StrategyDecisionEngine.php';
 require_once dirname(__DIR__) . '/core/PaperTrader.php';
+require_once dirname(__DIR__) . '/core/DirectionPolicy.php';
+require_once dirname(__DIR__) . '/evaluation/PaperTradingScenarioAnalyzer.php';
 require_once dirname(__DIR__) . '/prediction/Athena50Shadow.php';
+require_once dirname(__DIR__) . '/prediction/ProbabilityCalculator.php';
+require_once dirname(__DIR__) . '/prediction/Athena50CorrelationAnalyzer.php';
 
 use Prometheus\core\StrategyDecisionEngine;
 use Prometheus\core\PaperTrader;
+use Prometheus\evaluation\PaperTradingScenarioAnalyzer;
+
+if (!function_exists('prometheus_config')) {
+    function prometheus_config(string $key = null, $default = null) { return $default; }
+}
 use Prometheus\prediction\Athena50Shadow;
+use Prometheus\prediction\Athena50CorrelationAnalyzer;
 
 function ptCheck(bool $condition, string $message): void
 {
@@ -47,6 +57,8 @@ ptCheck($engine->decide('STRATEGY',$up,$disagree,$flat,$config,$evidence,true)['
 ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$config,['n'=>10,'avg_abs_return_pct'=>1.0],true)['reason_codes']===['INSUFFICIENT_HISTORY'],'amostra histórica insuficiente não abre trade');
 $highCost=$config; $highCost['fee_pct']=1.0; $highCost['slippage_pct']=.5;
 ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$highCost,$evidence,true)['reason_codes']===['COST_TOO_HIGH'],'cenário de custo alto fica fora');
+$volatile=$up;$volatile['regime']='HIGH_VOLATILITY';$riskConfig=$config+['avoid_volatile'=>1];
+ptCheck($engine->decide('STRATEGY',$volatile,$horizons,$flat,$riskConfig,$evidence,true)['reason_codes']===['REGIME_FILTER'],'filtro de regime volátil é configurável no modo estratégia');
 
 $schema=(string)file_get_contents(dirname(__DIR__).'/sql/migrations/011_paper_trading_v2.sql');
 $underwaterShort=['position_side'=>'SHORT','cash_balance'=>74.9,'reserved_cash'=>25.0,'entry_price'=>100.0,'quantity_btc'=>1.0];
@@ -59,4 +71,20 @@ ptCheck(strpos($schema,'UNIQUE KEY uniq_paper_mode_prediction (mode, prediction_
 $cutoff='2026-09-28 12:00:00';$cutoffUtc='2026-09-28 15:00:00';
 $candle=['close_time'=>'2026-09-28 11:59:00','ingested_at'=>'2026-09-28 14:59:00','available_at'=>'2026-09-28 14:58:00'];
 $rows=Athena50Shadow::filterPointInTimeRows([$candle,array_replace($candle,['close_time'=>'2026-09-28 12:01:00']),array_replace($candle,['ingested_at'=>'2026-09-28 15:01:00']),array_replace($candle,['available_at'=>'2026-09-28 15:01:00'])],$cutoff,$cutoffUtc);
+$ablation=Athena50Shadow::evaluateGroupAblations(['MOMENTUM'=>['probability_up'=>.8]],'UP');
+ptCheck(($ablation['MOMENTUM']['hit']??null)===1&&abs(($ablation['MOMENTUM']['brier']??1)-.04)<.000001,'ablação guarda acerto e Brier no mesmo resultado avaliado');
+$lineageSchema=(string)file_get_contents(dirname(__DIR__).'/sql/migrations/011_paper_trading_v2.sql');
+ptCheck(strpos($lineageSchema,'available_at DATETIME NULL')!==false&&strpos($lineageSchema,'ingested_at DATETIME NOT NULL')!==false,'ordens paper preservam disponibilidade e ingestão do preço usado');
+$scenarioTrade=['exit_at'=>'2026-09-28 12:00:00','gross_pnl'=>2.0,'fees_usd'=>.1,'slippage_usd'=>.5];
+$normalCost=PaperTradingScenarioAnalyzer::analyze([$scenarioTrade],100.0,1.0);
+$stressCost=PaperTradingScenarioAnalyzer::analyze([$scenarioTrade],100.0,2.5);
+ptCheck(abs($normalCost['net_pnl']-1.9)<.000001&&$stressCost['net_pnl']<$normalCost['net_pnl'],'sensibilidade de custos reprecifica taxa e slippage sem mudar o ledger');
+$snapshots=[];for($i=0;$i<35;$i++)$snapshots[]=['FEATURE_A'=>['status'=>'AVAILABLE','normalized_value'=>$i/35],'FEATURE_B'=>['status'=>'AVAILABLE','normalized_value'=>$i/70],'FEATURE_CONSTANT'=>['status'=>'AVAILABLE','normalized_value'=>.25]];
+$correlation=Athena50CorrelationAnalyzer::analyzeSnapshots($snapshots,.95,30);
+$pairFound=false;foreach($correlation['high_correlation_pairs'] as $pair)if($pair['feature_a']==='FEATURE_A'&&$pair['feature_b']==='FEATURE_B')$pairFound=true;
+ptCheck($pairFound&&in_array('FEATURE_CONSTANT',$correlation['constant_features'],true),'correlation shadow identifica duplicação e feature constante sem removê-las');
+$modules=['ATHENA','HERMES','POSEIDON','HEPHAESTUS','CRONOS','MARKET_RELATIONS'];$signals=[];$weights=[];
+foreach($modules as $module){$signals[]=['module'=>$module,'value'=>$module==='ATHENA'?.8:0.0,'confidence'=>.8,'status'=>'AVAILABLE'];$weights[$module]=1.0;}
+$candidates=Athena50Shadow::candidateProbabilities($signals,$weights,['probability_up'=>.6],-.8,.8,.2,['MOMENTUM'=>['probability_up'=>.4]]);
+ptCheck(isset($candidates['PROMETHEUS_CURRENT'],$candidates['PROMETHEUS_ATHENA50_REPLACE'],$candidates['ATHENA_CLASSIC_ONLY'],$candidates['ATHENA_50_ONLY'],$candidates['PROMETHEUS_MINUS_HEPHAESTUS'],$candidates['ATHENA50_MINUS_MOMENTUM']),'candidatos A/B/D/E e ablações são gerados na mesma previsão');
 ptCheck(count($rows)===1,'candle aberto, ingestão futura e disponibilidade futura são rejeitados no shadow');
