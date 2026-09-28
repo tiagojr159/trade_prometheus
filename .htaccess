@@ -6,6 +6,6 @@ RewriteEngine On
 RewriteRule ^api/(.*)$ api/$1 [L]
 </IfModule>
 
-<FilesMatch "^(api_keys|database|config)\.php$">
+<FilesMatch "^(api_keys|database|config|admin_credentials)\.php$">
   Require all denied
 </FilesMatch>

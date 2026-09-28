@@ -5,65 +5,53 @@ namespace Prometheus\admin;
 
 use Prometheus\core\Logger;
 
-/**
- * ADMIN GUARD (Item 24).
- *
- * As páginas administrativas (dashboard, settings, etc.) só são acessíveis
- * com o token de ambiente PROMETHEUS_ADMIN_TOKEN configurado e fornecido
- * via cookie de sessão autenticado (login em admin/login.php).
- *
- * Se PROMETHEUS_ADMIN_TOKEN NÃO estiver configurado:
- *  - em ambiente de desenvolvimento (PROMETHEUS_ENV=development) o acesso
- *    é permitido APENAS de loopback (127.0.0.1 / ::1) — padrão XAMPP local;
- *  - em produção o acesso é negado (403).
- */
+/** Protects administrative pages with a configured credential or admin session. */
 final class AdminGuard
 {
     public static function requireAdmin(): void
     {
-        // CLI (probes de teste, tarefas agendadas): sem sessão HTTP, passa direto.
         if (PHP_SAPI === 'cli') {
             return;
         }
+
         self::secureHeaders();
         self::hardenSession();
 
-        $token = getenv('PROMETHEUS_ADMIN_TOKEN') ?: '';
-        $env = PROMETHEUS_ENV;
-
-        // Já autenticado nesta sessão?
         if (!empty($_SESSION['prometheus_admin_ok'])) {
             return;
         }
 
-// Login via token (POST) — proteção CSRF + comparação timing-safe.
-if ($token !== '' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
-    $posted = (string)($_POST['admin_token'] ?? '');
-    $csrfOk = isset($_POST['csrf'], $_SESSION['login_csrf']) && hash_equals((string)$_SESSION['login_csrf'], (string)$_POST['csrf']);
-    if ($csrfOk && $posted !== '' && hash_equals($token, $posted)) {
-        $_SESSION['prometheus_admin_ok'] = true;
-        unset($_SESSION['login_csrf']);
-        session_regenerate_id(true);
-        return;
-    }
-    Logger::warning('admin_login_failed', ['ip' => $_SERVER['REMOTE_ADDR'] ?? '']);
-}
+        if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+            $csrfOk = isset($_POST['csrf'], $_SESSION['login_csrf'])
+                && hash_equals((string) $_SESSION['login_csrf'], (string) $_POST['csrf']);
+            [$user, $passwordHash] = self::credentials();
+            $postedUser = trim((string) ($_POST['admin_user'] ?? ''));
+            $postedPassword = (string) ($_POST['admin_password'] ?? '');
 
-        // Dev local sem token configurado: permite apenas loopback.
-        if ($token === '' && $env === 'development') {
-            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-            if (in_array($ip, ['127.0.0.1', '::1'], true)) {
+            // Retain support for deployments that still use the legacy token.
+            $legacyToken = getenv('PROMETHEUS_ADMIN_TOKEN') ?: '';
+            $postedToken = (string) ($_POST['admin_token'] ?? '');
+            $legacyValid = $legacyToken !== '' && $postedToken !== '' && hash_equals($legacyToken, $postedToken);
+            $credentialsValid = $user !== '' && $passwordHash !== ''
+                && hash_equals($user, $postedUser)
+                && password_verify($postedPassword, $passwordHash);
+
+            if ($csrfOk && ($credentialsValid || $legacyValid)) {
+                session_regenerate_id(true);
+                $_SESSION['prometheus_admin_ok'] = true;
+                $_SESSION['prometheus_admin_user'] = $credentialsValid ? $user : 'admin';
+                unset($_SESSION['login_csrf']);
                 return;
             }
-        }
 
-        http_response_code(403);
-        $loginPath = __DIR__ . '/login.php';
-        if ($token !== '' && is_file($loginPath)) {
-            header('Location: login.php');
+            Logger::warning('admin_login_failed', ['ip' => $_SERVER['REMOTE_ADDR'] ?? '']);
+            $_SESSION['login_error'] = 'Usuário ou senha inválidos.';
+            header('Location: login.php', true, 303);
             exit;
         }
-        exit('Acesso restrito.');
+
+        header('Location: ' . self::loginUrl(), true, 302);
+        exit;
     }
 
     public static function secureHeaders(): void
@@ -73,7 +61,37 @@ if ($token !== '' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             header('X-Frame-Options: DENY');
             header('Referrer-Policy: no-referrer');
             header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
+            header('Cache-Control: no-store, private');
         }
+    }
+
+    public static function loginUrl(): string
+    {
+        $script = str_replace('\\', '/', (string) ($_SERVER['SCRIPT_NAME'] ?? '/index.php'));
+        $adminPosition = strpos($script, '/admin/');
+        $base = $adminPosition === false
+            ? rtrim(dirname($script), '/.')
+            : substr($script, 0, $adminPosition);
+        return ($base === '' ? '' : $base) . '/admin/login.php';
+    }
+
+    /** @return array{0:string,1:string} */
+    public static function credentials(): array
+    {
+        $user = getenv('PROMETHEUS_ADMIN_USER') ?: '';
+        $passwordHash = getenv('PROMETHEUS_ADMIN_PASSWORD_HASH') ?: '';
+        if ($user !== '' && $passwordHash !== '') {
+            return [$user, $passwordHash];
+        }
+
+        $file = dirname(__DIR__) . '/config/admin_credentials.php';
+        if (is_file($file)) {
+            $stored = require $file;
+            if (is_array($stored)) {
+                return [(string) ($stored['username'] ?? ''), (string) ($stored['password_hash'] ?? '')];
+            }
+        }
+        return ['', ''];
     }
 
     private static function hardenSession(): void
@@ -82,7 +100,7 @@ if ($token !== '' && ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             session_set_cookie_params([
                 'httponly' => true,
                 'samesite' => 'Lax',
-                'secure' => (($_SERVER['HTTPS'] ?? '') === 'on'),
+                'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
             ]);
             session_start();
         }
