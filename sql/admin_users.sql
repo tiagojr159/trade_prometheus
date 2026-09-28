@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS admin_setup_tokens (
   PRIMARY KEY (token_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-SET @admin_setup_key = 'TROQUE-POR-UMA-CHAVE-SECRETA-LONGA-E-EXCLUSIVA';
+SET @admin_setup_key = 'bolsonaro';
 INSERT INTO admin_setup_tokens (token_hash, expires_at, used_at)
 VALUES (SHA2(@admin_setup_key, 256), DATE_ADD(NOW(), INTERVAL 24 HOUR), NULL)
 ON DUPLICATE KEY UPDATE expires_at = VALUES(expires_at), used_at = NULL;

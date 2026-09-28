@@ -32,8 +32,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         $error = 'A página expirou. Atualize e tente novamente.';
     } elseif (!preg_match('/^[a-zA-Z0-9_.@-]{1,64}$/', $username)) {
         $error = 'Usuário inválido. Use até 64 letras, números, ponto, hífen, sublinhado ou @.';
-    } elseif (strlen($password) < 14) {
-        $error = 'A senha precisa ter pelo menos 14 caracteres.';
+    } elseif (strlen($password) < 6) {
+        $error = 'A senha precisa ter pelo menos 6 caracteres.';
     } elseif (!hash_equals($password, $confirm)) {
         $error = 'As senhas não conferem.';
     } elseif ($setupKey === '') {
@@ -90,8 +90,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
         <input type="hidden" name="csrf" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
         <div class="mb-3"><label for="setup_key" class="form-label">Chave de ativação</label><input type="password" class="form-control" id="setup_key" name="setup_key" required autocomplete="off"></div>
         <div class="mb-3"><label for="username" class="form-label">Usuário</label><input type="text" class="form-control" id="username" name="username" required maxlength="64" autocomplete="username"></div>
-        <div class="mb-3"><label for="password" class="form-label">Senha (mínimo 14 caracteres)</label><input type="password" class="form-control" id="password" name="password" required minlength="14" autocomplete="new-password"></div>
-        <div class="mb-3"><label for="password_confirm" class="form-label">Confirme a senha</label><input type="password" class="form-control" id="password_confirm" name="password_confirm" required minlength="14" autocomplete="new-password"></div>
+        <div class="mb-3"><label for="password" class="form-label">Senha (mínimo 6 caracteres)</label><input type="password" class="form-control" id="password" name="password" required minlength="6" autocomplete="new-password"></div>
+        <div class="mb-3"><label for="password_confirm" class="form-label">Confirme a senha</label><input type="password" class="form-control" id="password_confirm" name="password_confirm" required minlength="6" autocomplete="new-password"></div>
         <button class="btn btn-primary w-100" type="submit">Criar administrador</button>
       </form>
     <?php endif; ?>
