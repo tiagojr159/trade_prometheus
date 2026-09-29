@@ -54,7 +54,7 @@ final class PaperTrader
                 'SELECT p.*,IF(p.created_at>=DATE_SUB(NOW(),INTERVAL 30 MINUTE),1,0) AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
                  WHERE p.symbol=? AND p.horizon="15m" AND d.id IS NULL AND p.created_at<=NOW()
                    AND p.created_at>=DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                 ORDER BY p.created_at ASC,p.id ASC LIMIT 100',
+                 ORDER BY p.created_at DESC,p.id DESC LIMIT 100',
                 [$mode, $symbol]
             );
             $processed = 0; $lastDecision = null; $lastPrediction = null; $lastReason = null;
