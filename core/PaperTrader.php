@@ -9,16 +9,18 @@ use PDO;
 final class PaperTrader
 {
     private StrategyDecisionEngine $decisionEngine;
+    private PaperStrategyEngine $paperStrategies;
 
     public function __construct(?StrategyDecisionEngine $decisionEngine = null)
     {
         $this->decisionEngine = $decisionEngine ?: new StrategyDecisionEngine();
+        $this->paperStrategies = new PaperStrategyEngine($this->decisionEngine);
     }
 
     public function run(string $symbol = 'BTCUSDT'): array
     {
         $results = [];
-        foreach (['DIRECTIONAL', 'STRATEGY'] as $mode) {
+        foreach (array_keys(PaperStrategyEngine::modes()) as $mode) {
             try {
                 $results[$mode] = $this->runMode($mode, $symbol);
             } catch (\Throwable $e) {
@@ -40,7 +42,7 @@ final class PaperTrader
             $accountStmt = $pdo->prepare('SELECT * FROM paper_trading_v2_accounts WHERE mode=? FOR UPDATE');
             $accountStmt->execute([$mode]);
             $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$config || !$account) throw new \RuntimeException('A migration 011 do paper trading ainda não foi aplicada.');
+            if (!$config || !$account) throw new \RuntimeException('A migration 013 do torneio de estratégias paper ainda não foi aplicada.');
             $pdo->prepare('UPDATE paper_trading_heartbeat SET status=?,last_started_at=NOW(),last_error=NULL WHERE mode=?')->execute([(int)$config['enabled'] ? 'ACTIVE' : 'STOPPED', $mode]);
             if (!(int)$config['enabled']) {
                 $pdo->commit();
@@ -62,13 +64,30 @@ final class PaperTrader
                 $before = $account['position_side'];
                 $freshPrediction = (int)($p['is_fresh']??0)===1;
                 $fresh = $freshPrediction && (float)$market['close_price'] > 0;
-                $horizons = $mode === 'STRATEGY' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
-                $evidence = $mode === 'STRATEGY' ? $this->historicalMagnitude($pdo, $p) : [];
-                $decision = $this->decisionEngine->decide($mode, $p, $horizons, $account, $config, $evidence, $fresh);
-                if (strpos((string)$decision['action'], 'OPEN_') !== false) {
+                $horizons = $mode === 'MULTIHORIZON' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
+                $evidence = $mode === 'MULTIHORIZON' ? $this->historicalMagnitude($pdo, $p) : [];
+                if ($mode === 'PROMETHEUS' || $mode === 'MULTIHORIZON') {
+                    $decisionMode = $mode === 'PROMETHEUS' ? 'DIRECTIONAL' : 'STRATEGY';
+                    $decision = $this->decisionEngine->decide($decisionMode, $p, $horizons, $account, $config, $evidence, $fresh);
+                } else {
+                    $candles1m = $this->historicalCandles($pdo, $symbol, '1m', (string)$p['created_at'], 100);
+                    $candles15m = $this->historicalCandles($pdo, $symbol, '15m', (string)$p['created_at'], 25);
+                    $decision = $this->paperStrategies->decide($mode, $p, $account, $config, $candles1m, $candles15m);
+                }
+                if (strpos((string)$decision['action'], 'OPEN_') !== false
+                    && !empty($config['avoid_volatile'])
+                    && in_array(strtoupper((string)($p['regime'] ?? '')), ['VOLATILE', 'HIGH_VOLATILITY'], true)) {
+                    $decision['action'] = 'NO_TRADE';
+                    $decision['reason_codes'] = ['REGIME_FILTER'];
+                    $decision['explanation'] = 'Entrada bloqueada: filtro de alta volatilidade ativo para todas as estratégias.';
+                }
+                if (in_array($mode, ['PROMETHEUS', 'MULTIHORIZON'], true) && strpos((string)$decision['action'], 'OPEN_') !== false) {
                     $entryDirection = strpos((string)$decision['action'], 'OPEN_SHORT') !== false ? 'DOWN' : 'UP';
                     $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection);
                     $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
+                }
+                if (strpos((string)$decision['action'], 'OPEN_') !== false && (float)$decision['estimated_cost_pct'] <= 0) {
+                    $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
                 }
                 $decision['position_before'] = $before;
 
@@ -124,7 +143,7 @@ final class PaperTrader
                     if ($account['position_side'] === 'FLAT') $this->openPosition($pdo,$mode,$account,$market,$p,$decision,$decisionId,$config,$side,$reason);
                 }
 
-                $equity = $this->equity($account, (float)$market['close_price']);
+                $equity = $this->equity($account, (float)$market['close_price'], $config);
                 $peak = max((float)$account['peak_equity'], $equity);
                 $dd = $peak > 0 ? max((float)$account['max_drawdown_pct'], ($peak - $equity) / $peak * 100) : 0.0;
                 $account['peak_equity'] = $peak; $account['max_drawdown_pct'] = $dd;
@@ -140,7 +159,7 @@ final class PaperTrader
             $heartbeatDecision = $lastDecision ?? ($latestHandled['last_decision'] ?? 'NO_TRADE');
             $heartbeatReason = $processed ? $lastReason : ($latestHandled['last_reason'] ?? 'Nenhuma previsão nova de 15m aguardando decisão.');
             if ($processed === 0) {
-                $equity=$this->equity($account,(float)$market['close_price']);
+                $equity=$this->equity($account,(float)$market['close_price'],$config);
                 $peak=max((float)$account['peak_equity'],$equity);
                 $dd=$peak>0?max((float)$account['max_drawdown_pct'],($peak-$equity)/$peak*100):0.0;
                 $account['peak_equity']=$peak;$account['max_drawdown_pct']=$dd;
@@ -188,6 +207,26 @@ final class PaperTrader
             $row=$stmt->fetch(PDO::FETCH_ASSOC); if($row)$out[$horizon]=$row;
         }
         return $out;
+    }
+
+    /** Returns only complete candles that had arrived by the prediction timestamp. */
+    private function historicalCandles(PDO $pdo, string $symbol, string $interval, string $asOf, int $limit): array
+    {
+        $timestamp = strtotime($asOf);
+        if ($timestamp === false) return [];
+        $utcCutoff = gmdate('Y-m-d H:i:s', $timestamp);
+        $limit = max(1, min(500, $limit));
+        $stmt = $pdo->prepare(
+            'SELECT id,open_time,close_time,open_price,high_price,low_price,close_price,volume
+             FROM market_data
+             WHERE symbol=? AND interval_name=? AND close_time<=?
+               AND ingested_at IS NOT NULL AND ingested_at<=?
+               AND temporal_quality IN ("EXACT","INGESTION_ONLY")
+               AND (available_at IS NULL OR (available_at<=? AND ingested_at>=available_at))
+             ORDER BY close_time DESC,open_time DESC LIMIT ' . $limit
+        );
+        $stmt->execute([$symbol, $interval, $asOf, $utcCutoff, $utcCutoff]);
+        return array_reverse($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
     }
 
     private function historicalMagnitude(PDO $pdo, array $p): array
@@ -309,7 +348,7 @@ final class PaperTrader
     {
         $reference=(float)$market['close_price']; $slipPct=(float)$config['slippage_pct'];
         $fill=$reference*($side==='LONG'?1+$slipPct/100:1-$slipPct/100);
-        $equity=max(0.0,$this->equity($account,$reference)); $budget=$equity*min(100.0,(float)$config['allocation_pct'])/100.0;
+        $equity=max(0.0,$this->equity($account,$reference,$config)); $budget=$equity*min(100.0,(float)$config['allocation_pct'])/100.0;
         if($side==='LONG')$budget=min($budget,(float)$account['cash_balance']);
         else $budget=min($budget,(float)$account['cash_balance']);
         $qty=$budget/max(1e-12,$fill*(1+(float)$config['fee_pct']/100));
@@ -357,21 +396,23 @@ final class PaperTrader
             ->execute([$a['cash_balance'],$a['position_side'],$a['quantity_btc'],$a['entry_price'],$a['entry_market_data_id'],$a['entry_prediction_id'],$a['entry_at'],$a['entry_reason'],$a['entry_fee_usd'],$a['entry_slippage_usd'],$a['reserved_cash'],$a['realized_pnl'],$a['total_fees'],$a['total_slippage'],$mode]);
     }
 
-    private function equity(array $pdoAccount,float $price): float
+    private function equity(array $pdoAccount,float $price,array $config=[]): float
     {
         $side=$pdoAccount['position_side']??'FLAT';$qty=(float)($pdoAccount['quantity_btc']??0);$cash=(float)($pdoAccount['cash_balance']??0);
-        if($side==='LONG')return $cash+$qty*$price;
-        if($side==='SHORT')return max(0.0,$cash+(float)($pdoAccount['reserved_cash']??0)+$this->unrealized($pdoAccount,$price));
+        $exitCost=$qty*$price*(((float)($config['fee_pct']??0)+(float)($config['slippage_pct']??0))/100.0);
+        if($side==='LONG')return max(0.0,$cash+$qty*$price-$exitCost);
+        if($side==='SHORT')return max(0.0,$cash+(float)($pdoAccount['reserved_cash']??0)+$this->unrealized($pdoAccount,$price)-$exitCost);
         return $cash;
     }
 
-    public static function markedEquity(array $account,float $price): float
+    public static function markedEquity(array $account,float $price,float $exitCostPct=0.0): float
     {
         $side=$account['position_side']??'FLAT';$qty=(float)($account['quantity_btc']??0);$cash=(float)($account['cash_balance']??0);
-        if($side==='LONG')return max(0.0,$cash+$qty*$price);
+        $exitCost=$qty*$price*max(0.0,$exitCostPct)/100.0;
+        if($side==='LONG')return max(0.0,$cash+$qty*$price-$exitCost);
         if($side==='SHORT'){
             $unrealized=($price-(float)($account['entry_price']??0))*$qty*-1;
-            return max(0.0,$cash+(float)($account['reserved_cash']??0)+$unrealized);
+            return max(0.0,$cash+(float)($account['reserved_cash']??0)+$unrealized-$exitCost);
         }
         return max(0.0,$cash);
     }

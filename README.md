@@ -7,7 +7,7 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
    Para bancos existentes criados antes da lineage temporal, aplique `sql/migrations/008_temporal_lineage.sql`.
    Para instalar a simulação antiga, importe `sql/migrations/010_paper_trading.sql` uma única vez.
-   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`.
+   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`. Para o torneio com sete estratégias, aplique depois `sql/migrations/013_paper_strategy_tournament.sql`.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`
@@ -47,7 +47,7 @@ Para executar a simulação automática a cada minuto, adicione ao agendador do 
 * * * * * php /caminho/prometheus/cron.php paper_trade
 ```
 
-As ordens são apenas simuladas, sem corretora ou dinheiro real. A migration 011 cria duas contas independentes com US$ 100 cada: DIRECTIONAL acompanha previsões e STRATEGY exige confirmação entre horizontes, histórico suficiente e expectativa estimada acima dos custos. As duas registram LONG/SHORT sintético, taxas, slippage, decisão e heartbeat. O intervalo entre novas entradas é configurável; a quantidade de operações depende dos dados recentes e dos sinais válidos, sem meta artificial de trades.
+As ordens são apenas simuladas, sem corretora ou dinheiro real. A migration 013 preserva as antigas contas como `LEGACY_DIRECTIONAL` e `LEGACY_STRATEGY` e cria sete contas independentes de US$ 100: previsão PROMETHEUS, confirmação multihorizonte, sinal inverso, momentum EMA 9/26, reversão à média RSI/Bollinger, rompimento de canal com volume e uma estratégia adaptativa ao regime. Todas registram LONG/SHORT sintético, taxas, slippage, decisão e heartbeat. Os indicadores técnicos usam apenas candles disponíveis no instante da previsão. O ranking acompanha equity e PnL de cada conta; retornos passados ou simulados não garantem lucro.
 
 A migration 012 ativa o experimento prospectivo ATHENA-50 isolado do ensemble. Ela não recupera dados brutos antigos; os resultados só aparecem depois que as previsões shadow novas forem avaliadas.
 
