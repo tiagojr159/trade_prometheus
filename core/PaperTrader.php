@@ -84,7 +84,8 @@ final class PaperTrader
                 if (in_array($mode, ['PROMETHEUS', 'MULTIHORIZON'], true) && strpos((string)$decision['action'], 'OPEN_') !== false) {
                     $entryDirection = strpos((string)$decision['action'], 'OPEN_SHORT') !== false ? 'DOWN' : 'UP';
                     $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection);
-                    $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
+                    $decision['expected_edge_pct'] = $entryEvidence['avg_return_pct'] ?? null;
+                    $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
                 }
                 if (strpos((string)$decision['action'], 'OPEN_') !== false && (float)$decision['estimated_cost_pct'] <= 0) {
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);

@@ -50,6 +50,7 @@ final class PaperStrategyEngine
         if ($mode === 'ADAPTIVE') {
             $regime = strtoupper((string)($prediction['regime'] ?? ''));
             if (in_array($regime, ['BULLISH', 'BEARISH'], true)) return $this->momentum($prediction, $position, $config, $candles1m, $candles15m, 'ADAPTIVE_TREND');
+            if (in_array($regime, ['VOLATILE', 'HIGH_VOLATILITY'], true)) return $this->breakout($prediction, $position, $config, $candles15m);
             if ($regime === 'SIDEWAYS') return $this->meanReversion($prediction, $position, $config, $candles1m, 'ADAPTIVE_RANGE');
             return $this->result('NO_TRADE', $prediction, null, null, 0.0, ['REGIME_FILTER'], 'Estratégia adaptativa aguarda: regime de alta volatilidade ou indefinido.');
         }
@@ -89,8 +90,8 @@ final class PaperStrategyEngine
         if ($current === 'SHORT' && ($price <= (float)$bands['middle'] || $rsi <= 50)) return $this->result('CLOSE_SHORT', $p, 0.5 - $rsi / 100, null, 0.0, ['MEAN_REACHED'], 'Fecha SHORT: preço voltou à média ou RSI cruzou 50.');
 
         $side = null;
-        if ($price <= (float)$bands['lower'] && $rsi <= 30) $side = 'LONG';
-        elseif ($price >= (float)$bands['upper'] && $rsi >= 70) $side = 'SHORT';
+        if ($price <= (float)$bands['lower'] && $rsi <= 35) $side = 'LONG';
+        elseif ($price >= (float)$bands['upper'] && $rsi >= 65) $side = 'SHORT';
         $expected = $side === 'LONG' ? ((float)$bands['middle'] - $price) / $price * 100 : ($side === 'SHORT' ? ($price - (float)$bands['middle']) / $price * 100 : 0.0);
         return $this->signal($side, $p, $position, $config, max(0.0, $expected), $label,
             'Reversão à média: extremo de Bollinger confirmado pelo RSI; alvo é a banda central.');
@@ -98,21 +99,21 @@ final class PaperStrategyEngine
 
     private function breakout(array $p, array $position, array $config, array $candles15m): array
     {
-        if (count($candles15m) < 21) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Rompimento aguarda 20 candles anteriores de 15 minutos.');
+        if (count($candles15m) < 13) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Rompimento aguarda 12 candles anteriores de 15 minutos.');
         $current = array_pop($candles15m);
-        $range = array_slice($candles15m, -20);
+        $range = array_slice($candles15m, -12);
         $high = max(array_map(static fn(array $c): float => (float)$c['high_price'], $range));
         $low = min(array_map(static fn(array $c): float => (float)$c['low_price'], $range));
         $averageVolume = array_sum(array_map(static fn(array $c): float => (float)$c['volume'], $range)) / count($range);
         $close = (float)$current['close_price'];
         $volume = (float)$current['volume'];
         $side = null;
-        if ($close > $high && $volume >= 1.25 * $averageVolume) $side = 'LONG';
-        elseif ($close < $low && $volume >= 1.25 * $averageVolume) $side = 'SHORT';
+        if ($close > $high && $volume >= $averageVolume) $side = 'LONG';
+        elseif ($close < $low && $volume >= $averageVolume) $side = 'SHORT';
         $atr = ATR::latest(array_merge($range, [$current]), 14);
         $expected = $atr !== null && $close > 0 ? $atr / $close * 100 : 0.0;
         return $this->signal($side, $p, $position, $config, $expected, 'BREAKOUT',
-            'Rompimento: fechamento saiu do canal de 20 candles com volume pelo menos 25% acima da média.');
+            'Rompimento: fechamento saiu do canal de 12 candles, com volume igual ou acima da média.');
     }
 
     private function signal(?string $side, array $p, array $position, array $config, float $expected, string $label, string $reason): array
@@ -125,8 +126,6 @@ final class PaperStrategyEngine
         }
         if ($side === 'SHORT' && empty($config['allow_short'])) return $this->result($current === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, $expected, $cost, ['SHORT_DISABLED'], 'SHORT sintético está desativado.');
         if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Mantém a posição alinhada com a regra técnica.');
-        $required = $cost + max(0.0, (float)$config['min_edge_pct']);
-        if ($expected <= $required) return $this->result('NO_TRADE', $p, $score, $expected, $cost, ['COST_TOO_HIGH'], 'Entrada bloqueada: alvo técnico estimado não cobre taxas, slippage e margem.');
         if ($current === 'FLAT') return $this->result('OPEN_' . $side, $p, $score, $expected, $cost, ['TECHNICAL_SIGNAL'], $reason);
         $action = 'CLOSE_' . $current;
         if (($config['reversal_policy'] ?? 'CLOSE_REVERSE') === 'CLOSE_REVERSE') $action .= '+OPEN_' . $side;

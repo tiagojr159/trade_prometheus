@@ -35,17 +35,17 @@ UPDATE paper_trading_heartbeat SET mode=CONCAT('LEGACY_',mode) WHERE mode IN ('D
 
 INSERT IGNORE INTO paper_trading_config
   (mode,enabled,initial_balance,allocation_pct,allow_short,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier)
-SELECT 'PROMETHEUS',1,100,allocation_pct,1,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
+SELECT 'PROMETHEUS',1,100,allocation_pct,1,0,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
 FROM paper_trading_config WHERE mode='LEGACY_DIRECTIONAL';
 
 INSERT IGNORE INTO paper_trading_config
   (mode,enabled,initial_balance,allocation_pct,allow_short,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier)
-SELECT 'MULTIHORIZON',1,100,allocation_pct,1,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
+SELECT 'MULTIHORIZON',1,100,allocation_pct,1,0,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
 FROM paper_trading_config WHERE mode='LEGACY_DIRECTIONAL';
 
 INSERT IGNORE INTO paper_trading_config
   (mode,enabled,initial_balance,allocation_pct,allow_short,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier)
-SELECT modes.mode,1,100,allocation_pct,1,avoid_volatile,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
+SELECT modes.mode,1,100,allocation_pct,1,0,fee_pct,slippage_pct,min_edge_pct,min_confidence,cooldown_minutes,reversal_policy,stop_loss_pct,take_profit_pct,max_position_minutes,stress_multiplier
 FROM paper_trading_config base
 CROSS JOIN (
   SELECT 'INVERSE' AS mode UNION ALL

@@ -61,18 +61,11 @@ final class StrategyDecisionEngine
         $score /= $weightSum;
         $agree = count(array_filter($availableDirections, static fn($d) => $d === $p['predicted_direction']));
         if ($agree < 2) return $this->result('NO_TRADE', $p, $score, null, 0.0, ['HORIZON_DISAGREEMENT'], 'Os horizontes não confirmam a direção de 15 minutos.');
-        if (empty($evidence['n']) || (int)$evidence['n'] < 30 || $evidence['avg_abs_return_pct'] === null) {
-            return $this->result('NO_TRADE', $p, $score, null, 0.0, ['INSUFFICIENT_HISTORY'], 'Aguardando pelo menos 30 resultados históricos já conhecidos para estimar magnitude.');
-        }
-
         $expected = abs($score) * (float)$evidence['avg_abs_return_pct'];
         $cost = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
-        $safety = (float)$config['min_edge_pct'];
-        $side = $score > 0 ? 'LONG' : 'SHORT';
+        $side = $p['predicted_direction'] === 'UP' ? 'LONG' : 'SHORT';
         $codes = [];
         if ($side === 'SHORT' && empty($config['allow_short'])) $codes[] = 'SHORT_DISABLED';
-        if (abs($score) < 0.10) $codes[] = 'HORIZON_DISAGREEMENT';
-        if ($expected <= $cost + $safety) $codes[] = 'COST_TOO_HIGH';
         if (!$codes) $codes = ['SIGNAL_CONFIRMED'];
         $current = $position['position_side'] ?? 'FLAT';
         if (!$codes || $codes === ['SIGNAL_CONFIRMED']) {
