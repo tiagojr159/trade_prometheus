@@ -51,10 +51,10 @@ final class PaperTrader
             if (!$market || !$this->isFreshMarket($market)) throw new \RuntimeException('Sem candle fechado, recente e disponível para execução simulada.');
 
             $predictions = Database::fetchAll(
-                'SELECT p.*,IF(p.created_at>=DATE_SUB(NOW(),INTERVAL 30 MINUTE),1,0) AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
+                'SELECT p.*,1 AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
                  WHERE p.symbol=? AND p.horizon="15m" AND d.id IS NULL AND p.created_at<=NOW()
-                   AND p.created_at>=DATE_SUB(NOW(), INTERVAL 24 HOUR)
-                 ORDER BY p.created_at DESC,p.id DESC LIMIT 100',
+                   AND p.created_at>=DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                 ORDER BY p.created_at DESC,p.id DESC LIMIT 1',
                 [$mode, $symbol]
             );
             $processed = 0; $lastDecision = null; $lastPrediction = null; $lastReason = null;
@@ -71,10 +71,20 @@ final class PaperTrader
                 $lastOrder->execute([$mode]);
                 $lastOrderAt = $lastOrder->fetchColumn();
                 $withinCooldown = $lastOrderAt && (time() - strtotime((string)$lastOrderAt)) < (int)$config['cooldown_minutes'] * 60;
-                if ($mode === 'STRATEGY' && $withinCooldown && strpos((string)$decision['action'], 'CLOSE_') !== 0) {
-                    $decision['action'] = 'NO_TRADE';
-                    $decision['reason_codes'] = ['COOLDOWN'];
-                    $decision['explanation'] = 'A posição aguarda o intervalo mínimo configurado entre novas entradas.';
+                $actionWantsOpen = strpos((string)$decision['action'], 'OPEN_') !== false;
+                if ($withinCooldown && $actionWantsOpen) {
+                    // During cooldown, allow a signal reversal to close the current
+                    // position but never open the opposite side in the same event.
+                    $pairedClose = strpos((string)$decision['action'], '+OPEN_');
+                    if (strpos((string)$decision['action'], 'CLOSE_') === 0 && $pairedClose !== false) {
+                        $decision['action'] = substr((string)$decision['action'], 0, $pairedClose);
+                        $decision['reason_codes'] = ['COOLDOWN', 'DIRECTION_REVERSAL'];
+                        $decision['explanation'] = 'O intervalo mínimo entre ordens está ativo; fecha a posição e aguarda antes de abrir a direção oposta.';
+                    } else {
+                        $decision['action'] = 'NO_TRADE';
+                        $decision['reason_codes'] = ['COOLDOWN'];
+                        $decision['explanation'] = 'O intervalo mínimo entre ordens está ativo; aguarda antes de abrir uma nova posição.';
+                    }
                 }
 
                 $riskExit = $this->riskExit($account, (float)$market['close_price'], $config);
