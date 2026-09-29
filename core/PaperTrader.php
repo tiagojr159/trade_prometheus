@@ -65,6 +65,11 @@ final class PaperTrader
                 $horizons = $mode === 'STRATEGY' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
                 $evidence = $mode === 'STRATEGY' ? $this->historicalMagnitude($pdo, $p) : [];
                 $decision = $this->decisionEngine->decide($mode, $p, $horizons, $account, $config, $evidence, $fresh);
+                if (strpos((string)$decision['action'], 'OPEN_') !== false) {
+                    $entryDirection = strpos((string)$decision['action'], 'OPEN_SHORT') !== false ? 'DOWN' : 'UP';
+                    $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection);
+                    $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
+                }
                 $decision['position_before'] = $before;
 
                 $lastOrder = $pdo->prepare('SELECT MAX(created_at) FROM paper_trading_v2_orders WHERE mode=?');
@@ -189,6 +194,104 @@ final class PaperTrader
     {
         $rows=Database::fetch('SELECT COUNT(*) n,AVG(ABS(r.return_pct)) avg_abs_return_pct FROM predictions p JOIN prediction_results r ON r.prediction_id=p.id WHERE p.horizon=? AND p.regime=? AND p.created_at<? AND r.evaluated_at<=? AND r.evaluation_version=2 AND r.actual_direction IN ("UP","DOWN")',[$p['horizon'],$p['regime'],$p['created_at'],$p['created_at']]);
         return ['n'=>(int)($rows['n']??0),'avg_abs_return_pct'=>$rows&&$rows['avg_abs_return_pct']!==null?(float)$rows['avg_abs_return_pct']:null];
+    }
+
+    /**
+     * Estimates realized, direction-aligned returns for prior predictions like
+     * this one. Only point-in-time-known outcomes enter the cohort. Overlapping
+     * forecasts are thinned so the confidence estimate does not count each
+     * minute's near-identical 15m outcome as an independent sample.
+     */
+    private function historicalDirectionalEdge(PDO $pdo, string $symbol, array $p, string $direction): array
+    {
+        if (!in_array($direction, ['UP', 'DOWN'], true)) return ['n' => 0, 'avg_return_pct' => null, 'stddev_pct' => null];
+
+        $classProbability = $direction === 'UP' ? (float)$p['probability_up'] : (float)$p['probability_down'];
+        if ($classProbability <= 0.50) return ['n' => 0, 'avg_return_pct' => null, 'stddev_pct' => null];
+        $probabilityFloor = max(0.50, min(0.90, 0.50 + floor(max(0.0, $classProbability - 0.50) / 0.10) * 0.10));
+        $probabilityCeiling = min(1.00001, $probabilityFloor + 0.10);
+        $rows = Database::fetchAll(
+            'SELECT p.created_at,
+                    CASE WHEN p.predicted_direction="UP" THEN r.return_pct ELSE -r.return_pct END directional_return_pct
+             FROM predictions p
+             JOIN prediction_results r ON r.prediction_id=p.id
+             WHERE p.symbol=? AND p.horizon=? AND p.regime=? AND p.predicted_direction=?
+               AND (CASE WHEN p.predicted_direction="UP" THEN p.probability_up ELSE p.probability_down END)>=?
+               AND (CASE WHEN p.predicted_direction="UP" THEN p.probability_up ELSE p.probability_down END)<?
+               AND p.created_at<? AND r.evaluated_at<=? AND r.evaluation_version=2
+               AND r.actual_direction IN ("UP","DOWN")
+             ORDER BY p.created_at DESC,p.id DESC LIMIT 5000',
+            [$symbol, $p['horizon'], $p['regime'], $direction, $probabilityFloor, $probabilityCeiling, $p['created_at'], $p['created_at']]
+        );
+
+        $horizonSeconds = ['15m' => 900, '1h' => 3600, '4h' => 14400, '24h' => 86400][(string)$p['horizon']] ?? 900;
+        $independentReturns = [];
+        $lastSelectedStart = null;
+        foreach ($rows as $row) {
+            $start = strtotime((string)$row['created_at']);
+            if ($start === false || ($lastSelectedStart !== null && $start + $horizonSeconds > $lastSelectedStart)) continue;
+            $independentReturns[] = (float)$row['directional_return_pct'];
+            $lastSelectedStart = $start;
+        }
+        $n = count($independentReturns);
+        $average = $n > 0 ? array_sum($independentReturns) / $n : null;
+        $variance = 0.0;
+        if ($n > 1) {
+            foreach ($independentReturns as $return) $variance += ($return - (float)$average) ** 2;
+            $variance /= ($n - 1);
+        }
+        return [
+            'n' => $n,
+            'avg_return_pct' => $average,
+            'stddev_pct' => $n > 1 ? sqrt($variance) : null,
+            'probability_floor' => $probabilityFloor,
+            'probability_ceiling' => $probabilityCeiling,
+        ];
+    }
+
+    /** Applies the empirical net-edge gate before any paper entry/reversal. */
+    private function gateEntryOnHistoricalNetEdge(array &$decision, array $p, array $config, array $evidence): void
+    {
+        $action = (string)($decision['action'] ?? 'NO_TRADE');
+        if (strpos($action, 'OPEN_') === false) return;
+
+        $cost = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
+        $decision['estimated_cost_pct'] = $cost;
+        $decision['expected_edge_pct'] = $evidence['avg_return_pct'] ?? null;
+
+        $reason = null;
+        if (!empty($config['avoid_volatile']) && in_array(strtoupper((string)($p['regime'] ?? '')), ['VOLATILE', 'HIGH_VOLATILITY'], true)) {
+            $decision['reason_codes'] = ['REGIME_FILTER'];
+            $reason = 'Entrada bloqueada: filtro de alta volatilidade ativo.';
+        } elseif ((float)($p['confidence'] ?? 0) < (float)$config['min_confidence']) {
+            $decision['reason_codes'] = ['LOW_CONFIDENCE'];
+            $reason = 'Entrada bloqueada: confiança abaixo do limite configurado.';
+        } elseif ((int)($evidence['n'] ?? 0) < 30 || $evidence['avg_return_pct'] === null || $evidence['stddev_pct'] === null) {
+            $decision['reason_codes'] = ['INSUFFICIENT_EDGE_HISTORY'];
+            $reason = 'Entrada bloqueada: ainda não há 30 resultados comparáveis conhecidos para estimar vantagem líquida.';
+        } else {
+            // Conservative lower confidence bound: require evidence to clear
+            // round-trip fees, slippage and the configured safety margin.
+            $n = (int)$evidence['n'];
+            $lowerBound = (float)$evidence['avg_return_pct'] - 1.96 * (float)$evidence['stddev_pct'] / sqrt($n);
+            $required = $cost + max(0.0, (float)$config['min_edge_pct']);
+            if ($lowerBound <= $required) {
+                $decision['reason_codes'] = ['NET_EDGE_TOO_LOW'];
+                $reason = sprintf(
+                    'Entrada bloqueada: limite conservador da vantagem (%.3f%%) não supera custos e margem (%.3f%%), com %d casos comparáveis.',
+                    $lowerBound,
+                    $required,
+                    $n
+                );
+            }
+        }
+
+        if ($reason !== null) {
+            // Keep an existing position unchanged on an unqualified reversal;
+            // stop, target and maximum holding time can still close it below.
+            $decision['action'] = 'NO_TRADE';
+            $decision['explanation'] = $reason;
+        }
     }
 
     private function riskExit(array $account, float $price, array $config): ?string
