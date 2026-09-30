@@ -61,12 +61,12 @@ try{
     $temporalColumns=Database::fetchAll('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME="market_data" AND COLUMN_NAME IN ("available_at","ingested_at","temporal_quality")');
     $temporalColumnNames=array_column($temporalColumns,'COLUMN_NAME');
     $temporalSchemaReady=count(array_intersect(['available_at','ingested_at','temporal_quality'],$temporalColumnNames))===3;
-    if($temporalSchemaReady)$priceRow=Database::fetch('SELECT id,close_price,open_time,close_time,available_at,ingested_at FROM market_data WHERE symbol=? AND interval_name=? AND close_time<=NOW() AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP() AND temporal_quality IN ("EXACT","INGESTION_ONLY") AND (available_at IS NULL OR (available_at<=UTC_TIMESTAMP() AND ingested_at>=available_at)) ORDER BY close_time DESC LIMIT 1',[$symbol,prometheus_config('collector.market_interval','1m')]);
+    if($temporalSchemaReady)$priceRow=Database::fetch('SELECT id,close_price,open_time,close_time,available_at,ingested_at FROM market_data WHERE symbol=? AND interval_name=? AND close_time<=? AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP() AND temporal_quality IN ("EXACT","INGESTION_ONLY") AND (available_at IS NULL OR (available_at<=UTC_TIMESTAMP() AND ingested_at>=available_at)) ORDER BY close_time DESC LIMIT 1',[$symbol,prometheus_config('collector.market_interval','1m'),date('Y-m-d H:i:s')]);
     if(!$config||!$account||!$heartbeat||!$temporalSchemaReady){$ready=false;} else {
         $decisions=Database::fetchAll('SELECT * FROM paper_trading_decisions WHERE mode=? ORDER BY id DESC LIMIT 40',[$mode]);
         $trades=Database::fetchAll('SELECT * FROM paper_trading_v2_trades WHERE mode=? ORDER BY exit_at DESC,id DESC LIMIT 30',[$mode]);
         $curve=Database::fetchAll('SELECT id,prediction_id,price_timestamp,reference_price,equity FROM paper_trading_equity WHERE mode=? ORDER BY created_at DESC,id DESC LIMIT 720',[$mode]);$curve=array_reverse($curve);
-        $priceHistory=Database::fetchAll('SELECT close_price,close_time FROM market_data WHERE symbol=? AND interval_name=? AND close_time<=NOW() AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP() AND temporal_quality IN ("EXACT","INGESTION_ONLY") AND (available_at IS NULL OR (available_at<=UTC_TIMESTAMP() AND ingested_at>=available_at)) ORDER BY close_time DESC LIMIT 720',[$symbol,prometheus_config('collector.market_interval','1m')]);
+        $priceHistory=Database::fetchAll('SELECT close_price,close_time FROM market_data WHERE symbol=? AND interval_name=? AND close_time<=? AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP() AND temporal_quality IN ("EXACT","INGESTION_ONLY") AND (available_at IS NULL OR (available_at<=UTC_TIMESTAMP() AND ingested_at>=available_at)) ORDER BY close_time DESC LIMIT 720',[$symbol,prometheus_config('collector.market_interval','1m'),date('Y-m-d H:i:s')]);
         $priceHistory=array_reverse($priceHistory);
         foreach($priceHistory as $candle){$btcPriceSeries[]=['x'=>strtotime((string)$candle['close_time'])*1000,'y'=>(float)$candle['close_price'],'kind'=>'price'];}
         if($priceHistory){
@@ -111,7 +111,7 @@ $equity=\Prometheus\core\PaperTrader::markedEquity($account??[],$price,(float)($
 $initial=(float)($account['initial_balance']??100);$realized=(float)($account['realized_pnl']??0);$totalPnl=$equity-$initial;$returnPct=$initial>0?$totalPnl/$initial*100:0;
 $nTrades=(int)($stats['n']??0);$wins=(int)($stats['wins']??0);$lossSum=(float)($stats['loss_sum']??0);$profitFactor=$lossSum>0?(float)($stats['gains']??0)/$lossSum:null;$winRate=$nTrades>0?$wins/$nTrades*100:null;
 $heartbeatAge=$heartbeat&&$heartbeat['last_finished_at']?(int)($heartbeat['age_seconds']??PHP_INT_MAX):PHP_INT_MAX;
-$heartbeatStatus=!$ready?'MIGRATION PENDENTE':((int)($config['enabled']??0)===0?'PARADO':(($heartbeat['status']??'STOPPED')==='ERROR'?'ERRO':($heartbeatAge>300?'ATRASADO':'ATIVO')));
+$heartbeatStatus=!$ready?'MIGRATION PENDENTE':((int)($config['enabled']??0)===0?'PARADO':(($heartbeat['status']??'STOPPED')==='ERROR'?'ERRO':(($heartbeat['status']??'')==='WAITING_DATA'?'AGUARDANDO DADOS':($heartbeatAge>300?'ATRASADO':'ATIVO'))));
 $decisionLabels=['OPEN_LONG'=>'ABRIR LONG','OPEN_SHORT'=>'ABRIR SHORT','CLOSE_LONG'=>'FECHAR LONG','CLOSE_SHORT'=>'FECHAR SHORT','HOLD_LONG'=>'MANTER LONG','HOLD_SHORT'=>'MANTER SHORT','NO_TRADE'=>'NÃO OPERAR','INDETERMINATE'=>'INDETERMINADA'];
 $labels=['UP'=>'ALTA','DOWN'=>'BAIXA','INDETERMINATE'=>'INDEFINIDA','SIDEWAYS'=>'LATERAL (LEGADO)'];
 $series=[];$buyHold=[];$startPrice=(float)($curve[0]['reference_price']??0);

@@ -50,7 +50,12 @@ final class PaperTrader
             }
 
             $market = $this->latestExecutablePrice($pdo, $symbol);
-            if (!$market || !$this->isFreshMarket($market)) throw new \RuntimeException('Sem candle fechado, recente e disponível para execução simulada.');
+            if (!$market || !$this->isFreshMarket($market)) {
+                $waitingReason = "Aguardando candle fechado, recente e disponivel para execucao simulada.";
+                $pdo->prepare("UPDATE paper_trading_heartbeat SET status=\"WAITING_DATA\",last_finished_at=NOW(),last_reason=?,last_error=NULL,next_evaluation_at=DATE_ADD(NOW(),INTERVAL 1 MINUTE) WHERE mode=?")->execute([$waitingReason,$mode]);
+                $pdo->commit();
+                return ["status" => "waiting_market_data", "processed" => 0, "reason" => $waitingReason];
+            }
 
             $predictions = Database::fetchAll(
                 'SELECT p.*,1 AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
@@ -179,14 +184,17 @@ final class PaperTrader
 
     private function latestExecutablePrice(PDO $pdo, string $symbol): ?array
     {
+        // Market event DATETIME values are stored in the application timezone;
+        // lineage fields (available_at / ingested_at) are stored in UTC.
+        $closeCutoff = date('Y-m-d H:i:s');
         $stmt = $pdo->prepare(
             'SELECT id,close_price,open_time,close_time,available_at,ingested_at FROM market_data
-             WHERE symbol=? AND interval_name=? AND close_time<=NOW() AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP()
+             WHERE symbol=? AND interval_name=? AND close_time<=? AND ingested_at IS NOT NULL AND ingested_at<=UTC_TIMESTAMP()
                AND temporal_quality IN ("EXACT","INGESTION_ONLY")
                AND (available_at IS NULL OR (available_at<=UTC_TIMESTAMP() AND ingested_at>=available_at))
              ORDER BY close_time DESC,open_time DESC LIMIT 1'
         );
-        $stmt->execute([$symbol,prometheus_config('collector.market_interval','1m')]);
+        $stmt->execute([$symbol,prometheus_config('collector.market_interval','1m'),$closeCutoff]);
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
