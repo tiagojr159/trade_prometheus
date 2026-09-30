@@ -86,11 +86,12 @@ final class PaperTrader
                     $decision['reason_codes'] = ['REGIME_FILTER'];
                     $decision['explanation'] = 'Entrada bloqueada: filtro de alta volatilidade ativo para todas as estratégias.';
                 }
-                if (in_array($mode, ['PROMETHEUS', 'MULTIHORIZON'], true) && strpos((string)$decision['action'], 'OPEN_') !== false) {
+                if (in_array($mode, ['PROMETHEUS', 'MULTIHORIZON', 'INVERSE'], true) && strpos((string)$decision['action'], 'OPEN_') !== false) {
                     $entryDirection = strpos((string)$decision['action'], 'OPEN_SHORT') !== false ? 'DOWN' : 'UP';
-                    $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection);
+                    $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection, $mode === 'INVERSE');
                     $decision['expected_edge_pct'] = $entryEvidence['avg_return_pct'] ?? null;
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
+                    $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
                 }
                 if (strpos((string)$decision['action'], 'OPEN_') !== false && (float)$decision['estimated_cost_pct'] <= 0) {
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
@@ -250,17 +251,18 @@ final class PaperTrader
      * forecasts are thinned so the confidence estimate does not count each
      * minute's near-identical 15m outcome as an independent sample.
      */
-    private function historicalDirectionalEdge(PDO $pdo, string $symbol, array $p, string $direction): array
+    private function historicalDirectionalEdge(PDO $pdo, string $symbol, array $p, string $direction, bool $inverse = false): array
     {
         if (!in_array($direction, ['UP', 'DOWN'], true)) return ['n' => 0, 'avg_return_pct' => null, 'stddev_pct' => null];
 
-        $classProbability = $direction === 'UP' ? (float)$p['probability_up'] : (float)$p['probability_down'];
+        $forecastDirection = $inverse ? ($direction === 'UP' ? 'DOWN' : 'UP') : $direction;
+        $classProbability = $forecastDirection === 'UP' ? (float)$p['probability_up'] : (float)$p['probability_down'];
         if ($classProbability <= 0.50) return ['n' => 0, 'avg_return_pct' => null, 'stddev_pct' => null];
         $probabilityFloor = max(0.50, min(0.90, 0.50 + floor(max(0.0, $classProbability - 0.50) / 0.10) * 0.10));
         $probabilityCeiling = min(1.00001, $probabilityFloor + 0.10);
         $rows = Database::fetchAll(
             'SELECT p.created_at,
-                    CASE WHEN p.predicted_direction="UP" THEN r.return_pct ELSE -r.return_pct END directional_return_pct
+                    (CASE WHEN p.predicted_direction="UP" THEN r.return_pct ELSE -r.return_pct END) * ? directional_return_pct
              FROM predictions p
              JOIN prediction_results r ON r.prediction_id=p.id
              WHERE p.symbol=? AND p.horizon=? AND p.regime=? AND p.predicted_direction=?
@@ -269,7 +271,7 @@ final class PaperTrader
                AND p.created_at<? AND r.evaluated_at<=? AND r.evaluation_version=2
                AND r.actual_direction IN ("UP","DOWN")
              ORDER BY p.created_at DESC,p.id DESC LIMIT 5000',
-            [$symbol, $p['horizon'], $p['regime'], $direction, $probabilityFloor, $probabilityCeiling, $p['created_at'], $p['created_at']]
+            [$inverse ? -1.0 : 1.0, $symbol, $p['horizon'], $p['regime'], $forecastDirection, $probabilityFloor, $probabilityCeiling, $p['created_at'], $p['created_at']]
         );
 
         $horizonSeconds = ['15m' => 900, '1h' => 3600, '4h' => 14400, '24h' => 86400][(string)$p['horizon']] ?? 900;

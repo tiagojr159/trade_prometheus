@@ -126,6 +126,16 @@ final class PaperStrategyEngine
         }
         if ($side === 'SHORT' && empty($config['allow_short'])) return $this->result($current === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, $expected, $cost, ['SHORT_DISABLED'], 'SHORT sintético está desativado.');
         if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Mantém a posição alinhada com a regra técnica.');
+        $required = $cost + max(0.0, (float)($config['min_edge_pct'] ?? 0.0));
+        if ($expected <= $required) {
+            $action = $current === 'FLAT' ? 'NO_TRADE' : 'CLOSE_' . $current;
+            $reason = sprintf(
+                'Entrada bloqueada: movimento técnico estimado (%.3f%%) não supera custos e margem (%.3f%%).',
+                $expected,
+                $required
+            );
+            return $this->result($action, $p, $score, $expected, $cost, ['NET_EDGE_TOO_LOW'], $reason);
+        }
         if ($current === 'FLAT') return $this->result('OPEN_' . $side, $p, $score, $expected, $cost, ['TECHNICAL_SIGNAL'], $reason);
         $action = 'CLOSE_' . $current;
         if (($config['reversal_policy'] ?? 'CLOSE_REVERSE') === 'CLOSE_REVERSE') $action .= '+OPEN_' . $side;

@@ -61,24 +61,28 @@ final class StrategyDecisionEngine
         $score /= $weightSum;
         $agree = count(array_filter($availableDirections, static fn($d) => $d === $p['predicted_direction']));
         if ($agree < 2) return $this->result('NO_TRADE', $p, $score, null, 0.0, ['HORIZON_DISAGREEMENT'], 'Os horizontes não confirmam a direção de 15 minutos.');
-        $expected = abs($score) * (float)$evidence['avg_abs_return_pct'];
+        $expected = abs($score) * (float)($evidence['avg_abs_return_pct'] ?? 0.0);
         $cost = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
         $side = $p['predicted_direction'] === 'UP' ? 'LONG' : 'SHORT';
-        $codes = [];
-        if ($side === 'SHORT' && empty($config['allow_short'])) $codes[] = 'SHORT_DISABLED';
-        if (!$codes) $codes = ['SIGNAL_CONFIRMED'];
         $current = $position['position_side'] ?? 'FLAT';
-        if (!$codes || $codes === ['SIGNAL_CONFIRMED']) {
-            if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Expectativa líquida supera custos; mantém a posição alinhada.');
-            if ($current !== 'FLAT') {
-                $decision = 'CLOSE_' . $current;
-                if (($config['reversal_policy'] ?? 'CLOSE_REVERSE') === 'CLOSE_REVERSE') $decision .= '+OPEN_' . $side;
-                return $this->result($decision, $p, $score, $expected, $cost, ['SIGNAL_CONFIRMED', 'DIRECTION_REVERSAL'], 'Expectativa líquida positiva e confirmação; aplica a política de reversão.');
-            }
-            return $this->result('OPEN_' . $side, $p, $score, $expected, $cost, ['SIGNAL_CONFIRMED'], 'Concordância de horizontes e expectativa estimada acima dos custos e margem.');
+        if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Mantém a posição alinhada com a confirmação entre horizontes.');
+        if ($side === 'SHORT' && empty($config['allow_short'])) {
+            return $this->result($current === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, $expected, $cost, ['SHORT_DISABLED'], 'SHORT sintético está desativado.');
         }
-        if ($current !== 'FLAT' && $current !== $side) return $this->result('CLOSE_' . $current, $p, $score, $expected, $cost, $codes, 'Fecha a posição após perda da condição de entrada; não abre a posição oposta.');
-        return $this->result('NO_TRADE', $p, $score, $expected, $cost, $codes, 'A expectativa estimada não passa os filtros de estratégia.');
+
+        $required = $cost + max(0.0, (float)($config['min_edge_pct'] ?? 0.0));
+        if ($expected <= $required) {
+            $action = $current === 'FLAT' ? 'NO_TRADE' : 'CLOSE_' . $current;
+            $reason = sprintf('Entrada bloqueada: expectativa estimada (%.3f%%) não supera custos e margem (%.3f%%).', $expected, $required);
+            return $this->result($action, $p, $score, $expected, $cost, ['NET_EDGE_TOO_LOW'], $reason);
+        }
+
+        if ($current !== 'FLAT') {
+            $decision = 'CLOSE_' . $current;
+            if (($config['reversal_policy'] ?? 'CLOSE_REVERSE') === 'CLOSE_REVERSE') $decision .= '+OPEN_' . $side;
+            return $this->result($decision, $p, $score, $expected, $cost, ['SIGNAL_CONFIRMED', 'DIRECTION_REVERSAL'], 'Expectativa acima dos custos e confirmação entre horizontes; aplica a política de reversão.');
+        }
+        return $this->result('OPEN_' . $side, $p, $score, $expected, $cost, ['SIGNAL_CONFIRMED'], 'Concordância de horizontes e expectativa estimada acima dos custos e margem.');
     }
 
     private function result(string $action, ?array $p, ?float $score, ?float $expected, float $cost, array $codes, string $explanation): array
