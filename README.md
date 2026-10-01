@@ -7,7 +7,7 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
    Para bancos existentes criados antes da lineage temporal, aplique `sql/migrations/008_temporal_lineage.sql`.
    Para instalar a simulação antiga, importe `sql/migrations/010_paper_trading.sql` uma única vez.
-   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`. Para o torneio com sete estratégias, aplique depois `sql/migrations/013_paper_strategy_tournament.sql`. Para calibrar as sete contas para amostragem prospectiva, aplique tambem `sql/migrations/014_paper_tournament_allow_sample_orders.sql`.
+   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`. Para o torneio de doze estratégias, aplique em sequência `sql/migrations/013_paper_strategy_tournament.sql`, `sql/migrations/014_paper_tournament_allow_sample_orders.sql` e `sql/migrations/015_paper_trading_twelve_strategies.sql`.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`
@@ -47,7 +47,7 @@ Para executar a simulação automática a cada minuto, adicione ao agendador do 
 * * * * * php /caminho/prometheus/cron.php paper_trade
 ```
 
-As ordens sao apenas simuladas, sem corretora ou dinheiro real. A migration 013 preserva as antigas contas e cria sete contas de US$ 100: PROMETHEUS, Multi-horizonte, Inversa, Momentum, Reversao a media, Rompimento e Adaptativa. A migration 014 permite que o torneio registre entradas pelas regras de cada estrategia sem aguardar um historico minimo ou bloquear por volatilidade; taxas e slippage continuam abatidos do resultado. O ranking acompanha equity e PnL; resultados simulados nao garantem lucro.
+As ordens sao apenas simuladas, sem corretora ou dinheiro real. A migration 013 preserva as contas antigas e cria sete contas de US$ 100: PROMETHEUS, Multi-horizonte, Inversa, Momentum, Reversao a media, Rompimento e Adaptativa. As migrations 014 e 015 habilitam a amostragem prospectiva e acrescentam cinco contas: Spot Grid, Spot DCA, viés de funding, rebalanceamento BTC/USDT e VWAP. A estrategia de funding e um sinal direcional, nao uma arbitragem spot/futuros delta-neutral; o sistema ainda nao registra basis ou pernas hedgeadas. Taxas e slippage continuam abatidos do resultado, e o ranking acompanha equity e PnL. Resultados simulados nao garantem lucro.
 
 A migration 012 ativa o experimento prospectivo ATHENA-50 isolado do ensemble. Ela não recupera dados brutos antigos; os resultados só aparecem depois que as previsões shadow novas forem avaliadas.
 

@@ -42,7 +42,7 @@ final class PaperTrader
             $accountStmt = $pdo->prepare('SELECT * FROM paper_trading_v2_accounts WHERE mode=? FOR UPDATE');
             $accountStmt->execute([$mode]);
             $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$config || !$account) throw new \RuntimeException('A migration 013 do torneio de estratégias paper ainda não foi aplicada.');
+            if (!$config || !$account) throw new \RuntimeException('Aplique as migrations 013 a 015 do torneio de estratégias paper em ordem.');
             $pdo->prepare('UPDATE paper_trading_heartbeat SET status=?,last_started_at=NOW(),last_error=NULL WHERE mode=?')->execute([(int)$config['enabled'] ? 'ACTIVE' : 'STOPPED', $mode]);
             if (!(int)$config['enabled']) {
                 $pdo->commit();
@@ -69,6 +69,11 @@ final class PaperTrader
                 $before = $account['position_side'];
                 $freshPrediction = (int)($p['is_fresh']??0)===1;
                 $fresh = $freshPrediction && (float)$market['close_price'] > 0;
+                if ($mode === 'SPOT_DCA' && $account['position_side'] === 'LONG' && !empty($account['entry_at'])) {
+                    $dcaCount = $pdo->prepare('SELECT COUNT(*) FROM paper_trading_v2_orders WHERE mode=? AND event_type="OPEN_LONG" AND price_timestamp>=?');
+                    $dcaCount->execute([$mode, $account['entry_at']]);
+                    $account['dca_entries'] = (int)$dcaCount->fetchColumn();
+                }
                 $horizons = $mode === 'MULTIHORIZON' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
                 $evidence = $mode === 'MULTIHORIZON' ? $this->historicalMagnitude($pdo, $p) : [];
                 if ($mode === 'PROMETHEUS' || $mode === 'MULTIHORIZON') {
@@ -79,7 +84,7 @@ final class PaperTrader
                     $candles15m = $this->historicalCandles($pdo, $symbol, '15m', (string)$p['created_at'], 25);
                     $decision = $this->paperStrategies->decide($mode, $p, $account, $config, $candles1m, $candles15m);
                 }
-                if (strpos((string)$decision['action'], 'OPEN_') !== false
+                if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG')
                     && !empty($config['avoid_volatile'])
                     && in_array(strtoupper((string)($p['regime'] ?? '')), ['VOLATILE', 'HIGH_VOLATILITY'], true)) {
                     $decision['action'] = 'NO_TRADE';
@@ -93,7 +98,7 @@ final class PaperTrader
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
                     $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
                 }
-                if (strpos((string)$decision['action'], 'OPEN_') !== false && (float)$decision['estimated_cost_pct'] <= 0) {
+                if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG') && (float)$decision['estimated_cost_pct'] <= 0) {
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
                 }
                 $decision['position_before'] = $before;
@@ -102,7 +107,7 @@ final class PaperTrader
                 $lastOrder->execute([$mode]);
                 $lastOrderAt = $lastOrder->fetchColumn();
                 $withinCooldown = $lastOrderAt && (time() - strtotime((string)$lastOrderAt)) < (int)$config['cooldown_minutes'] * 60;
-                $actionWantsOpen = strpos((string)$decision['action'], 'OPEN_') !== false;
+                $actionWantsOpen = strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG';
                 if ($withinCooldown && $actionWantsOpen) {
                     // During cooldown, allow a signal reversal to close the current
                     // position but never open the opposite side in the same event.
@@ -148,6 +153,13 @@ final class PaperTrader
                 if (strpos($action, 'OPEN_') === 0 || strpos($action, '+OPEN_') !== false) {
                     $side = strpos($action, 'OPEN_SHORT') !== false ? 'SHORT' : 'LONG';
                     if ($account['position_side'] === 'FLAT') $this->openPosition($pdo,$mode,$account,$market,$p,$decision,$decisionId,$config,$side,$reason);
+                }
+                if ($action === 'ADD_LONG' && $account['position_side'] === 'LONG') {
+                    $targetAllocation = $mode === 'REBALANCE' ? (float)$config['allocation_pct'] : null;
+                    $this->addLongPosition($pdo,$mode,$account,$market,$p,$decision,$decisionId,$config,$reason,$targetAllocation);
+                }
+                if ($action === 'TRIM_LONG' && $account['position_side'] === 'LONG') {
+                    $this->trimLongPosition($pdo,$mode,$account,$market,$p,$decision,$decisionId,$config,$reason,(float)$config['allocation_pct']);
                 }
 
                 $equity = $this->equity($account, (float)$market['close_price'], $config);
@@ -372,6 +384,68 @@ final class PaperTrader
         $account['entry_reason']=$reason;$account['entry_fee_usd']=$fee;$account['entry_slippage_usd']=$slippage;
         $account['total_fees']=(float)$account['total_fees']+$fee;$account['total_slippage']=(float)$account['total_slippage']+$slippage;
         $this->writeOrder($pdo,$mode,$account,$market,$p,$decision,$decisionId,$side==='LONG'?'OPEN_LONG':'OPEN_SHORT',$reference,$fill,$qty,$fee,$slippage,0.0,$reason,'FLAT');
+        $this->persistAccount($pdo,$mode,$account);
+    }
+
+    /** Adds a spot buy to an existing LONG, keeping weighted average entry and cost basis. */
+    private function addLongPosition(PDO $pdo,string $mode,array &$account,array $market,array $p,array $decision,int $decisionId,array $config,string $reason,?float $targetAllocationPct=null): void
+    {
+        if (($account['position_side'] ?? 'FLAT') !== 'LONG') return;
+        $reference=(float)$market['close_price'];$fill=$reference*(1+(float)$config['slippage_pct']/100);
+        $equity=max(0.0,$this->equity($account,$reference,$config));
+        if ($targetAllocationPct !== null) {
+            $targetNotional=$equity*max(0.0,min(100.0,$targetAllocationPct))/100.0;
+            $budget=max(0.0,$targetNotional-(float)$account['quantity_btc']*$reference);
+        } else {
+            $budget=$equity*min(100.0,(float)$config['allocation_pct'])/100.0;
+        }
+        $budget=min($budget,(float)$account['cash_balance']);
+        $qty=$budget/max(1e-12,$fill*(1+(float)$config['fee_pct']/100));
+        if($qty<=0)return;
+        $oldQty=(float)$account['quantity_btc'];$newQty=$oldQty+$qty;
+        $fee=$fill*$qty*(float)$config['fee_pct']/100;$slippage=abs($fill-$reference)*$qty;
+        $account['cash_balance']=max(0.0,(float)$account['cash_balance']-$fill*$qty-$fee);
+        $account['entry_price']=(((float)$account['entry_price']*$oldQty)+($fill*$qty))/max(1e-12,$newQty);
+        $account['quantity_btc']=$newQty;
+        $account['entry_fee_usd']=(float)$account['entry_fee_usd']+$fee;
+        $account['entry_slippage_usd']=(float)$account['entry_slippage_usd']+$slippage;
+        $account['total_fees']=(float)$account['total_fees']+$fee;
+        $account['total_slippage']=(float)$account['total_slippage']+$slippage;
+        $this->writeOrder($pdo,$mode,$account,$market,$p,$decision,$decisionId,'OPEN_LONG',$reference,$fill,$qty,$fee,$slippage,0.0,$reason,'LONG');
+        $this->persistAccount($pdo,$mode,$account);
+    }
+
+    /** Sells only the excess BTC above a target allocation and records realized partial PnL. */
+    private function trimLongPosition(PDO $pdo,string $mode,array &$account,array $market,array $p,array $decision,int $decisionId,array $config,string $reason,float $targetAllocationPct): void
+    {
+        if (($account['position_side'] ?? 'FLAT') !== 'LONG') return;
+        $reference=(float)$market['close_price'];$oldQty=(float)$account['quantity_btc'];
+        if ($reference<=0||$oldQty<=0)return;
+        $equity=max(0.0,$this->equity($account,$reference,$config));
+        $targetNotional=$equity*max(0.0,min(100.0,$targetAllocationPct))/100.0;
+        $targetQty=$targetNotional/$reference;
+        $qty=min($oldQty,max(0.0,$oldQty-$targetQty));
+        if ($qty<=1e-12)return;
+        $fill=$reference*(1-(float)$config['slippage_pct']/100);$notional=$fill*$qty;
+        $fee=$notional*(float)$config['fee_pct']/100;$slippage=abs($fill-$reference)*$qty;
+        $gross=($fill-(float)$account['entry_price'])*$qty;
+        $entryFeePart=(float)$account['entry_fee_usd']*($qty/$oldQty);
+        $entrySlippagePart=(float)$account['entry_slippage_usd']*($qty/$oldQty);
+        $net=$gross-$entryFeePart-$fee;
+        $account['cash_balance']+=(float)$fill*$qty-$fee;
+        $account['realized_pnl']=(float)$account['realized_pnl']+$net;
+        $account['total_fees']=(float)$account['total_fees']+$fee;
+        $account['total_slippage']=(float)$account['total_slippage']+$slippage;
+        $account['entry_fee_usd']=max(0.0,(float)$account['entry_fee_usd']-$entryFeePart);
+        $account['entry_slippage_usd']=max(0.0,(float)$account['entry_slippage_usd']-$entrySlippagePart);
+        $account['quantity_btc']=max(0.0,$oldQty-$qty);
+        $allFees=$entryFeePart+$fee;$allSlippage=$entrySlippagePart+$slippage;
+        $pdo->prepare('INSERT INTO paper_trading_v2_trades (mode,side,entry_prediction_id,exit_prediction_id,entry_market_data_id,exit_market_data_id,entry_at,exit_at,entry_price,exit_price,quantity_btc,gross_pnl,fees_usd,slippage_usd,net_pnl,entry_reason,exit_reason,hold_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$mode,'LONG',$account['entry_prediction_id'],$p['id'],$account['entry_market_data_id'],$market['id'],$account['entry_at'],$market['close_time'],$account['entry_price'],$fill,$qty,$gross,$allFees,$allSlippage,$net,$account['entry_reason'],$reason,max(0,time()-strtotime((string)$account['entry_at']))]);
+        if ((float)$account['quantity_btc']<=1e-12) {
+            $account['position_side']='FLAT';$account['quantity_btc']=0;$account['entry_price']=null;$account['entry_market_data_id']=null;$account['entry_prediction_id']=null;$account['entry_at']=null;$account['entry_reason']=null;$account['entry_fee_usd']=0;$account['entry_slippage_usd']=0;$account['reserved_cash']=0;
+        }
+        $this->writeOrder($pdo,$mode,$account,$market,$p,$decision,$decisionId,'CLOSE_LONG',$reference,$fill,$qty,$fee,$slippage,$net,$reason,'LONG');
         $this->persistAccount($pdo,$mode,$account);
     }
 
