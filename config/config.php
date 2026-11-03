@@ -93,4 +93,7 @@ return [
         // símbolo+horizonte dentro dessa janela são consideradas duplicadas.
         'dedupe_window_seconds' => 60,
     ],
+    'evaluation' => [
+        'target_tolerance_seconds' => 120,
+    ],
 ];

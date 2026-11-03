@@ -20,3 +20,7 @@
 !/storage/locks/.gitkeep
 /storage/backups/*
 !/storage/backups/.gitkeep
+
+# Local database audit exports
+/storage/research/*
+!/storage/research/.htaccess

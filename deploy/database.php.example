@@ -1,0 +1,11 @@
+<?php
+declare(strict_types=1);
+// Copy to config/database.php on the server, then fill values from cPanel MySQL.
+return [
+    'host' => 'localhost',
+    'port' => 3306,
+    'database' => 'CPANEL_USER_prometheus',
+    'username' => 'CPANEL_USER_dbuser',
+    'password' => 'CHANGE_ME',
+    'charset' => 'utf8mb4',
+];

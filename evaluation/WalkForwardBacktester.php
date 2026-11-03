@@ -91,7 +91,9 @@ final class WalkForwardBacktester
             $targetTime = date('Y-m-d H:i:s', strtotime($tTime) + $horizonSeconds);
             $targetCandle = TargetPriceResolver::fromCandles($candles, $targetTime, $end);
             if ($targetCandle === null) {
-                break;
+                $results['target_gaps'] = ($results['target_gaps'] ?? 0) + 1;
+                $index += (int)(self::STEP_MINUTES / 1);
+                continue;
             }
             $finalPrice = (float)$targetCandle['close_price'];
 

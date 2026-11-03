@@ -61,7 +61,10 @@ final class StrategyDecisionEngine
         $score /= $weightSum;
         $agree = count(array_filter($availableDirections, static fn($d) => $d === $p['predicted_direction']));
         if ($agree < 2) return $this->result('NO_TRADE', $p, $score, null, 0.0, ['HORIZON_DISAGREEMENT'], 'Os horizontes não confirmam a direção de 15 minutos.');
-        $expected = abs($score) * (float)($evidence['avg_abs_return_pct'] ?? 0.0);
+        if ((int)($evidence['n'] ?? 0) < 30 || !isset($evidence['avg_abs_return_pct'])) {
+            return $this->result('NO_TRADE', $p, $score, null, 0.0, ['INSUFFICIENT_HISTORY'], 'Histórico insuficiente para estimar movimento antes dos custos.');
+        }
+        $expected = abs($score) * (float)$evidence['avg_abs_return_pct'];
         $cost = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
         $side = $p['predicted_direction'] === 'UP' ? 'LONG' : 'SHORT';
         $current = $position['position_side'] ?? 'FLAT';

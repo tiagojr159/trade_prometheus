@@ -37,6 +37,8 @@ foreach ($seconds as $horizon => $duration) {
     $afterCClosed = TargetPriceResolver::fromCandles($candles, $target, $cClose);
     $assert($beforeCClosed !== null && $beforeCClosed['close_price'] === 2, "{$horizon}: select candle B and skip open candle C");
     $assert($afterCClosed !== null && $afterCClosed['close_price'] === 2, "{$horizon}: earliest eligible target candle remains B after C closes");
+    $gap = [['open_time'=>date('Y-m-d H:i:s',strtotime($target)+180),'close_time'=>date('Y-m-d H:i:s',strtotime($target)+239),'close_price'=>9]];
+    $assert(TargetPriceResolver::fromCandles($gap,$target,date('Y-m-d H:i:s',strtotime($target)+300))===null,"{$horizon}: gap greater than 120 seconds is not scored");
 }
 
 if ($failures) {

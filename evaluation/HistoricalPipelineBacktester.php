@@ -144,7 +144,9 @@ final class HistoricalPipelineBacktester
             $targetTime = date('Y-m-d H:i:s', strtotime($tTime) + $horizonSeconds);
             $targetCandle = TargetPriceResolver::fromCandles($candles, $targetTime, $end);
             if ($targetCandle === null) {
-                break;
+                $results['target_gaps'] = ($results['target_gaps'] ?? 0) + 1;
+                $index += $step;
+                continue;
             }
             $finalPrice = (float)$targetCandle['close_price'];
 

@@ -57,6 +57,12 @@ final class PaperTrader
                 return ["status" => "waiting_market_data", "processed" => 0, "reason" => $waitingReason];
             }
 
+            $riskClosed = false;
+            $riskReason = $this->riskExit($account, (float)$market['close_price'], $config);
+            if ($riskReason !== null && $account['position_side'] !== 'FLAT') {
+                $riskClosed = $this->closeOnMarketRisk($pdo, $mode, $account, $market, $config, $riskReason);
+            }
+
             $predictions = Database::fetchAll(
                 'SELECT p.*,1 AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
                  WHERE p.symbol=? AND p.horizon="15m" AND d.id IS NULL AND p.created_at<=NOW()
@@ -64,8 +70,10 @@ final class PaperTrader
                  ORDER BY p.created_at DESC,p.id DESC LIMIT 1',
                 [$mode, $symbol]
             );
-            $processed = 0; $lastDecision = null; $lastPrediction = null; $lastReason = null;
+            $processed = 0; $lastDecision = $riskClosed ? 'CLOSE_RISK' : null; $lastPrediction = null; $lastReason = $riskClosed ? $riskReason : null;
             foreach ($predictions as $p) {
+                // Never re-enter on the candle that closed the old position for risk.
+                if ($riskClosed) break;
                 $before = $account['position_side'];
                 $freshPrediction = (int)($p['is_fresh']??0)===1;
                 $fresh = $freshPrediction && (float)$market['close_price'] > 0;
@@ -176,7 +184,7 @@ final class PaperTrader
             $latestHandled = Database::fetch('SELECT last_prediction_id,last_decision,last_reason FROM paper_trading_heartbeat WHERE mode=?', [$mode]);
             $heartbeatId = $lastPrediction ?? ($latestHandled['last_prediction_id'] ?? null);
             $heartbeatDecision = $lastDecision ?? ($latestHandled['last_decision'] ?? 'NO_TRADE');
-            $heartbeatReason = $processed ? $lastReason : ($latestHandled['last_reason'] ?? 'Nenhuma previsão nova de 15m aguardando decisão.');
+            $heartbeatReason = ($processed || $riskClosed) ? $lastReason : ($latestHandled['last_reason'] ?? 'Nenhuma previsão nova de 15m aguardando decisão.');
             if ($processed === 0) {
                 $equity=$this->equity($account,(float)$market['close_price'],$config);
                 $peak=max((float)$account['peak_equity'],$equity);
@@ -367,6 +375,24 @@ final class PaperTrader
         return null;
     }
 
+    /** Existing positions must be checked on each fresh market candle, with no forecast required. */
+    private function closeOnMarketRisk(PDO $pdo, string $mode, array &$account, array $market, array $config, string $reason): bool
+    {
+        $predictionId = (int)($account['entry_prediction_id'] ?? 0);
+        if ($predictionId <= 0) throw new \RuntimeException('Posição sem previsão de entrada para saída de risco.');
+        $stmt = $pdo->prepare('SELECT p.*,d.id AS decision_id FROM predictions p JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=? WHERE p.id=? LIMIT 1');
+        $stmt->execute([$mode,$predictionId]);
+        $p = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$p) throw new \RuntimeException('Decisão de entrada ausente para saída de risco.');
+        $event = $pdo->prepare('INSERT IGNORE INTO paper_trading_risk_events (mode,market_data_id,entry_prediction_id,entry_decision_id,action,reason) VALUES (?,?,?,?,?,?)');
+        $event->execute([$mode,$market['id'],$predictionId,$p['decision_id'],'CLOSE_'.$account['position_side'],$reason]);
+        if ($event->rowCount() !== 1) return false;
+        $p['regime_confidence'] = null;
+        $decision = ['score'=>null,'risk_event_id'=>(int)$pdo->lastInsertId()];
+        $this->closePosition($pdo,$mode,$account,$market,$p,$decision,(int)$p['decision_id'],$config,$reason);
+        return true;
+    }
+
     private function openPosition(PDO $pdo,string $mode,array &$account,array $market,array $p,array $decision,int $decisionId,array $config,string $side,string $reason): void
     {
         $reference=(float)$market['close_price']; $slipPct=(float)$config['slippage_pct'];
@@ -471,8 +497,8 @@ final class PaperTrader
 
     private function writeOrder(PDO $pdo,string $mode,array $account,array $market,array $p,array $decision,int $decisionId,string $event,float $reference,float $fill,float $qty,float $fee,float $slippage,float $realized,string $reason,string $positionBefore): void
     {
-        $pdo->prepare('INSERT INTO paper_trading_v2_orders (mode,decision_id,prediction_id,prediction_created_at,horizon,predicted_direction,probability_up,probability_down,edge,confidence,regime,regime_confidence,ensemble_signal,strategy_score,position_before,position_after,event_type,market_data_id,price_timestamp,available_at,ingested_at,reference_price,fill_price,entry_price,exit_price,quantity_btc,notional_usd,fee_usd,slippage_usd,realized_pnl,unrealized_pnl,cash_after,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            ->execute([$mode,$decisionId,$p['id'],$p['created_at'],$p['horizon'],$p['predicted_direction'],$p['probability_up'],$p['probability_down'],$p['edge'],$p['confidence'],$p['regime'],$p['regime_confidence']??null,$p['ensemble_signal'],$decision['score'],$positionBefore,$account['position_side'],$event,$market['id'],$market['close_time'],$market['available_at'],$market['ingested_at'],$reference,$fill,$event==='OPEN_LONG'||$event==='OPEN_SHORT'?$fill:null,$event==='CLOSE_LONG'||$event==='CLOSE_SHORT'?$fill:null,$qty,$fill*$qty,$fee,$slippage,$realized,$this->unrealized($account,$reference),$account['cash_balance'],$reason]);
+        $pdo->prepare('INSERT INTO paper_trading_v2_orders (mode,decision_id,prediction_id,prediction_created_at,horizon,predicted_direction,probability_up,probability_down,edge,confidence,regime,regime_confidence,ensemble_signal,strategy_score,position_before,position_after,event_type,market_data_id,price_timestamp,available_at,ingested_at,reference_price,fill_price,entry_price,exit_price,quantity_btc,notional_usd,fee_usd,slippage_usd,realized_pnl,unrealized_pnl,cash_after,reason,risk_event_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            ->execute([$mode,$decisionId,$p['id'],$p['created_at'],$p['horizon'],$p['predicted_direction'],$p['probability_up'],$p['probability_down'],$p['edge'],$p['confidence'],$p['regime'],$p['regime_confidence']??null,$p['ensemble_signal'],$decision['score'],$positionBefore,$account['position_side'],$event,$market['id'],$market['close_time'],$market['available_at'],$market['ingested_at'],$reference,$fill,$event==='OPEN_LONG'||$event==='OPEN_SHORT'?$fill:null,$event==='CLOSE_LONG'||$event==='CLOSE_SHORT'?$fill:null,$qty,$fill*$qty,$fee,$slippage,$realized,$this->unrealized($account,$reference),$account['cash_balance'],$reason,$decision['risk_event_id']??null]);
     }
 
     private function persistAccount(PDO $pdo,string $mode,array $a): void

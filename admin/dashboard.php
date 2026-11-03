@@ -222,7 +222,7 @@ function signalStatusPt(string $status): string
   <section class="row g-3 mt-1">
     <div class="col-12 col-xl-4">
       <div class="panel">
-        <h2>Calibração de probabilidades</h2>
+        <h2>Calibração de probabilidades · 15m</h2>
         <?php if (empty($calibration['bins'])): ?>
           <p class="text-muted">Sem previsões avaliadas suficientes para calibração.</p>
         <?php else: ?>
@@ -234,6 +234,7 @@ function signalStatusPt(string $status): string
             <?php endforeach; ?>
             </tbody>
           </table>
+          <small class="text-muted d-block">Brier: <?=number_format((float)$calibration['brier_score'],4,',','.')?> · 0,25 é a referência de 50%.</small>
           <?php if (!empty($calibration['note'])): ?><small class="text-warning"><?= htmlspecialchars((string)$calibration['note']) ?></small><?php endif; ?>
         <?php endif; ?>
       </div>

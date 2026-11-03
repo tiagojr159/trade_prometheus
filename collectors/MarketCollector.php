@@ -63,13 +63,7 @@ final class MarketCollector
         $rows = $this->http->getJson($url, [], 30);
         $count = 0;
         foreach ($rows as $r) {
-            Database::execute(
-                'INSERT INTO market_data (symbol, source, interval_name, open_time, close_time, open_price, high_price, low_price, close_price, volume, available_at, ingested_at, temporal_quality, availability_source)
-                 VALUES (?, "binance", ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), "INGESTION_ONLY", "BINANCE_CLOSE_TIME_LOWER_BOUND")
-                 ON DUPLICATE KEY UPDATE high_price=VALUES(high_price), low_price=VALUES(low_price), close_price=VALUES(close_price), volume=VALUES(volume), close_time=VALUES(close_time), available_at=VALUES(available_at), ingested_at=UTC_TIMESTAMP(), temporal_quality="INGESTION_ONLY", availability_source="BINANCE_CLOSE_TIME_LOWER_BOUND"',
-                [$symbol, $interval, date('Y-m-d H:i:s', (int)($r[0] / 1000)), date('Y-m-d H:i:s', (int)($r[6] / 1000)), $r[1], $r[2], $r[3], $r[4], $r[5], gmdate('Y-m-d H:i:s', (int)($r[6] / 1000))]
-            );
-            $count++;
+            if ($this->saveClosedCandle($symbol,$interval,$r)) $count++;
         }
         Logger::info('market_collected', ['symbol' => $symbol, 'interval' => $interval, 'count' => $count]);
 
@@ -80,13 +74,7 @@ final class MarketCollector
                 $pairRows = $this->http->getJson('https://api.binance.com/api/v3/klines?symbol=' . urlencode($pair) . '&interval=' . urlencode($interval) . '&limit=' . min($limit, 240), [], 30);
                 $pairCount = 0;
                 foreach ($pairRows as $r) {
-                    Database::execute(
-                        'INSERT INTO market_data (symbol, source, interval_name, open_time, close_time, open_price, high_price, low_price, close_price, volume, available_at, ingested_at, temporal_quality, availability_source)
-                         VALUES (?, "binance", ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), "INGESTION_ONLY", "BINANCE_CLOSE_TIME_LOWER_BOUND")
-                         ON DUPLICATE KEY UPDATE high_price=VALUES(high_price), low_price=VALUES(low_price), close_price=VALUES(close_price), volume=VALUES(volume), close_time=VALUES(close_time), available_at=VALUES(available_at), ingested_at=UTC_TIMESTAMP(), temporal_quality="INGESTION_ONLY", availability_source="BINANCE_CLOSE_TIME_LOWER_BOUND"',
-                        [$pair, $interval, date('Y-m-d H:i:s', (int)($r[0] / 1000)), date('Y-m-d H:i:s', (int)($r[6] / 1000)), $r[1], $r[2], $r[3], $r[4], $r[5], gmdate('Y-m-d H:i:s', (int)($r[6] / 1000))]
-                    );
-                    $pairCount++;
+                    if ($this->saveClosedCandle($pair,$interval,$r)) $pairCount++;
                 }
                 Logger::info('market_collected_pair', ['symbol' => $pair, 'count' => $pairCount]);
             } catch (\Throwable $e) {
@@ -95,6 +83,27 @@ final class MarketCollector
         }
 
         return $count;
+    }
+
+    /** Closed observations are immutable; any later exchange correction is retained separately. */
+    private function saveClosedCandle(string $symbol,string $interval,array $r): bool
+    {
+        $closeUnix=(int)($r[6]/1000);
+        if ($closeUnix>time()) return false;
+        $open=date('Y-m-d H:i:s',(int)($r[0]/1000));
+        $close=date('Y-m-d H:i:s',$closeUnix);
+        $available=gmdate('Y-m-d H:i:s',$closeUnix);
+        Database::execute('INSERT INTO market_data (symbol,source,interval_name,open_time,close_time,open_price,high_price,low_price,close_price,volume,available_at,ingested_at,temporal_quality,availability_source,last_seen_at)
+            VALUES (?,"binance",?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(),"INGESTION_ONLY","BINANCE_CLOSE_TIME_LOWER_BOUND",UTC_TIMESTAMP())
+            ON DUPLICATE KEY UPDATE last_seen_at=UTC_TIMESTAMP()',
+            [$symbol,$interval,$open,$close,$r[1],$r[2],$r[3],$r[4],$r[5],$available]);
+        $existing=Database::fetch('SELECT id,close_time,open_price,high_price,low_price,close_price,volume FROM market_data WHERE symbol=? AND source="binance" AND interval_name=? AND open_time=?',[$symbol,$interval,$open]);
+        if ($existing && ($existing['close_time']!==$close || (float)$existing['open_price']!=(float)$r[1] || (float)$existing['high_price']!=(float)$r[2] || (float)$existing['low_price']!=(float)$r[3] || (float)$existing['close_price']!=(float)$r[4] || (float)$existing['volume']!=(float)$r[5])) {
+            $observation=['open_time'=>$open,'close_time'=>$close,'open_price'=>$r[1],'high_price'=>$r[2],'low_price'=>$r[3],'close_price'=>$r[4],'volume'=>$r[5]];
+            $json=json_encode($observation,JSON_THROW_ON_ERROR);
+            Database::execute('INSERT IGNORE INTO market_data_revisions (market_data_id,content_hash,observation_json,observed_at) VALUES (?,?,?,UTC_TIMESTAMP())',[$existing['id'],hash('sha256',$json),$json]);
+        }
+        return true;
     }
 
     public function latestPrice(string $symbol = 'BTCUSDT'): ?float

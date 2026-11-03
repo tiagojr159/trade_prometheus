@@ -38,7 +38,8 @@ final class PredictionEvaluator
         $predictions = Database::fetchAll(
             'SELECT p.* FROM predictions p
              LEFT JOIN prediction_results r ON r.prediction_id = p.id
-             WHERE r.id IS NULL AND p.target_time <= NOW()
+             LEFT JOIN prediction_evaluation_gaps g ON g.prediction_id=p.id
+             WHERE r.id IS NULL AND p.target_time <= NOW() AND (g.prediction_id IS NULL OR g.retry_after<=NOW())
              ORDER BY p.target_time ASC
              LIMIT 200'
         );
@@ -57,6 +58,9 @@ final class PredictionEvaluator
             );
             if (!$final) {
                 $unavailable++;
+                if (strtotime((string)$p['target_time']) < time() - 900) {
+                    Database::execute('INSERT INTO prediction_evaluation_gaps (prediction_id,target_time,reason,retry_after) VALUES (?,?,"TARGET_CANDLE_UNAVAILABLE",DATE_ADD(NOW(),INTERVAL 1 DAY)) ON DUPLICATE KEY UPDATE checked_at=NOW(),retry_after=DATE_ADD(NOW(),INTERVAL 1 DAY)', [$p['id'],$p['target_time']]);
+                }
                 continue; // sem dado ainda â€” fica pendente, nÃ£o inventa resultado
             }
 
@@ -76,6 +80,9 @@ final class PredictionEvaluator
                  ON DUPLICATE KEY UPDATE final_price=VALUES(final_price), actual_direction=VALUES(actual_direction), correct=VALUES(correct), return_pct=VALUES(return_pct), error_score=VALUES(error_score), directional_hit=VALUES(directional_hit), realized_return=VALUES(realized_return), evaluation_version=VALUES(evaluation_version)',
                 [$p['id'], $finalPrice, $actual, $hit, $realizedReturn * 100, $brier, $hit, $realizedReturn, DirectionPolicy::EVALUATION_VERSION]
             );
+
+            Database::execute('UPDATE prediction_results SET target_market_data_id=?,target_delay_seconds=? WHERE prediction_id=?', [$final['id'],max(0,strtotime($final['open_time'])-strtotime($p['target_time'])),$p['id']]);
+            Database::execute('DELETE FROM prediction_evaluation_gaps WHERE prediction_id=?', [$p['id']]);
 
             // Prospective-only ATHENA-50 shadow scorecard; failures never alter the canonical result.
             try {

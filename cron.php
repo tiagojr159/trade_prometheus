@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+if (PHP_SAPI !== 'cli') { http_response_code(403); exit; }
+
 require __DIR__ . '/bootstrap.php';
 
 use Prometheus\core\CronLock;
@@ -33,13 +35,26 @@ use Prometheus\prediction\PredictionService;
  * - Logs de início, conclusão (com duração) e falha de cada task.
  */
 
-$knownTasks = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade'];
-$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade'];
+$knownTasks = ['market', 'market_base', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade', 'tick'];
+$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'market_base', 'predictions', 'paper_trade', 'evaluate'];
 $symbol = prometheus_config('default_symbol', 'BTCUSDT');
 
 $task = $argv[1] ?? $_GET['task'] ?? 'all';
 if ($task === 'all') {
     $tasks = $fullCycle;
+} elseif ($task === 'tick') {
+    $minute = (int)date('i');
+    $hour = (int)date('G');
+    $tasks = [$minute % 15 === 0 ? 'market' : 'market_base'];
+    if ($minute % 15 === 0) $tasks[] = 'derivatives';
+    if ($minute === 0 && $hour % 6 === 0) $tasks[] = 'macro';
+    if ($minute === 0) $tasks[] = 'onchain';
+    if ($minute % 30 === 0) $tasks[] = 'news';
+    if ($minute % 5 === 0) {
+        if ($minute % 15 === 0) $tasks[] = 'market_base';
+        $tasks[] = 'predictions'; $tasks[] = 'paper_trade'; $tasks[] = 'evaluate';
+    }
+    if ($minute % 5 !== 0) $tasks[] = 'paper_trade';
 } elseif (in_array($task, $knownTasks, true)) {
     $tasks = [$task];
 } else {
@@ -54,6 +69,8 @@ $run = static function (string $name) use ($symbol) {
     switch ($name) {
         case 'market':
             return (new MarketCollector())->collectAllTimeframes($symbol);
+        case 'market_base':
+            return (new MarketCollector())->collect($symbol, '1m', 120);
         case 'derivatives':
             return (new DerivativesCollector())->collect($symbol);
         case 'onchain':

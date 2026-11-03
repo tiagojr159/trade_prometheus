@@ -50,14 +50,16 @@ final class ProbabilityCalculator
      * nunca contados como UP ou DOWN. Bins com amostra insuficiente são
      * marcados INSUFFICIENT_DATA. Sem recalibração automática aqui.
      */
-    public function calibration(): array
+    public function calibration(string $horizon = '15m'): array
     {
+        if (!in_array($horizon, ['15m','1h','4h','24h'], true)) throw new \InvalidArgumentException('Horizonte inválido.');
         $rows = Database::fetchAll(
             'SELECT p.probability_up, r.actual_direction, r.evaluation_version
              FROM predictions p
              JOIN prediction_results r ON r.prediction_id = p.id
-             ORDER BY p.created_at ASC
-             LIMIT 5000'
+             WHERE p.horizon=? AND r.evaluation_version=2 AND r.actual_direction IN ("UP","DOWN")
+             ORDER BY p.created_at DESC,p.id DESC
+             LIMIT 5000', [$horizon]
         );
         // Versionamento: apenas v2 entra na calibração corrente (v1 legada
         // é ternária — misturaria semânticas).
@@ -98,7 +100,9 @@ final class ProbabilityCalculator
 
         return [
             'bins' => $out,
+            'horizon' => $horizon,
             'total_evaluated' => $totalN,
+            'brier_score' => $totalN > 0 ? round(array_sum(array_map(static fn($r): float => ((float)$r['probability_up'] - ($r['actual_direction']==='UP'?1.0:0.0)) ** 2, $rows))/$totalN, 6) : null,
             'calibration_error' => $totalN > 0 ? round(sqrt($brierSum / $totalN), 4) : null,
             'note' => $totalN < 100 ? 'amostra pequena: calibração ainda não estatisticamente estável' : null,
         ];

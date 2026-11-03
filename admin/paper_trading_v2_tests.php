@@ -56,7 +56,7 @@ $disagree=$horizons; $disagree['1h']=ptPrediction('DOWN',.2);
 ptCheck($engine->decide('STRATEGY',$up,$disagree,$flat,$config,$evidence,true)['action']==='NO_TRADE','discordância entre horizontes resulta em NO_TRADE');
 ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$config,['n'=>10,'avg_abs_return_pct'=>1.0],true)['reason_codes']===['INSUFFICIENT_HISTORY'],'amostra histórica insuficiente não abre trade');
 $highCost=$config; $highCost['fee_pct']=1.0; $highCost['slippage_pct']=.5;
-ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$highCost,$evidence,true)['reason_codes']===['COST_TOO_HIGH'],'cenário de custo alto fica fora');
+ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$highCost,$evidence,true)['reason_codes']===['NET_EDGE_TOO_LOW'],'cenário de custo alto fica fora');
 $volatile=$up;$volatile['regime']='HIGH_VOLATILITY';$riskConfig=$config+['avoid_volatile'=>1];
 ptCheck($engine->decide('STRATEGY',$volatile,$horizons,$flat,$riskConfig,$evidence,true)['reason_codes']===['REGIME_FILTER'],'filtro de regime volátil é configurável no modo estratégia');
 

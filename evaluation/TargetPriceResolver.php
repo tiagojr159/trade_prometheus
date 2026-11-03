@@ -9,15 +9,20 @@ use Prometheus\core\AsOfTime;
 /** Shared target candle rule: earliest candle starting at/after target, closed by evaluation time. */
 final class TargetPriceResolver
 {
+    public static function latestAllowedOpen(string $targetTime): string
+    {
+        return date('Y-m-d H:i:s', strtotime($targetTime) + max(0, (int)prometheus_config('evaluation.target_tolerance_seconds', 120)));
+    }
+
     public static function resolve(string $symbol, string $targetTime, string $evaluationTime, string $interval): ?array
     {
         return Database::fetch(
-            'SELECT open_time, close_time, close_price FROM market_data
-             WHERE symbol = ? AND interval_name = ? AND open_time >= ? AND close_time <= ?
+            'SELECT id, open_time, close_time, close_price FROM market_data
+             WHERE symbol = ? AND interval_name = ? AND open_time >= ? AND open_time <= ? AND close_time <= ?
                AND ingested_at IS NOT NULL AND temporal_quality IN ("EXACT","INGESTION_ONLY") AND ' . AsOfTime::sqlUtcUpperBound('ingested_at') . '
                AND (available_at IS NULL OR (' . AsOfTime::sqlUtcUpperBound('available_at') . ' AND ingested_at >= available_at))
              ORDER BY open_time ASC LIMIT 1',
-            [$symbol, $interval, $targetTime, $evaluationTime]
+            [$symbol, $interval, $targetTime, self::latestAllowedOpen($targetTime), $evaluationTime]
         );
     }
 
@@ -25,7 +30,7 @@ final class TargetPriceResolver
     public static function fromCandles(array $candles, string $targetTime, string $evaluationTime): ?array
     {
         foreach ($candles as $candle) {
-            if ($candle['open_time'] >= $targetTime && $candle['close_time'] <= $evaluationTime) {
+            if ($candle['open_time'] >= $targetTime && $candle['open_time'] <= self::latestAllowedOpen($targetTime) && $candle['close_time'] <= $evaluationTime) {
                 return $candle;
             }
         }

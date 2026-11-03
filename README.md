@@ -1,5 +1,7 @@
 # PROMETHEUS
 
+Publicação PHP/MySQL na HostGator: veja `docs/HOSTGATOR_DEPLOY.md`. O pacote é criado por `php deploy/package.php`; scripts Python de pesquisa não são usados em produção.
+
 Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento do Bitcoin.
 
 ## Instalação
