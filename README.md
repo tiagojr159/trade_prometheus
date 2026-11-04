@@ -9,7 +9,7 @@ Sistema PHP/MySQL para coleta, análise e previsão probabilística do movimento
 1. Crie o banco importando `sql/prometheus.sql` no MySQL 8+.
    Para bancos existentes criados antes da lineage temporal, aplique `sql/migrations/008_temporal_lineage.sql`.
    Para instalar a simulação antiga, importe `sql/migrations/010_paper_trading.sql` uma única vez.
-   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`. Para o torneio de doze estratégias, aplique em sequência `sql/migrations/013_paper_strategy_tournament.sql`, `sql/migrations/014_paper_tournament_allow_sample_orders.sql` e `sql/migrations/015_paper_trading_twelve_strategies.sql`.
+   Para paper trading V2 e shadow ATHENA-50, importe em sequência `sql/migrations/011_paper_trading_v2.sql` e `sql/migrations/012_athena50_shadow.sql`. Para o torneio de doze estratégias, aplique em sequência `sql/migrations/013_paper_strategy_tournament.sql`, `sql/migrations/014_paper_tournament_allow_sample_orders.sql` e `sql/migrations/015_paper_trading_twelve_strategies.sql`. Em instalações existentes do torneio, aplique também `sql/migrations/016_paper_heartbeat_waiting_data.sql` para permitir que o heartbeat registre `WAITING_DATA`.
 2. Ajuste `config/database.php` ou use variáveis de ambiente:
    - `DB_HOST`
    - `DB_PORT`
