@@ -4,7 +4,7 @@ O aplicativo em produção usa PHP, MySQL/MariaDB e cron. Não chama Python. Os 
 
 ## Preparar o pacote
 
-No computador local:
+No computador local, gere o pacote de publicação:
 
 ```powershell
 C:\xampp\php\php.exe deploy\package.php
@@ -12,13 +12,13 @@ C:\xampp\php\php.exe deploy\package.php
 
 O ZIP é criado em `storage/backups/`. Ele exclui credenciais locais, snapshots, backups, testes e scripts Python. Confira o nome do ZIP retornado pelo comando e extraia seu conteúdo no diretório da aplicação na hospedagem. Crie `config/database.php` no servidor a partir de `deploy/database.php.example`, preenchendo o nome, usuário e senha do MySQL do cPanel. O banco da hospedagem terá nomes próprios do cPanel; `localhost` só funciona se o MySQL estiver no mesmo servidor.
 
-Transfira o banco de dados separadamente por exportação/importação MySQL. O ZIP contém código, não o histórico das 12 contas. Faça backup do banco da hospedagem antes de importar um dump. Para base já existente com migrations 001–015, execute uma vez, via Terminal do cPanel ou um cron temporário, o script abaixo. Ele faz backup do esquema e das 12 contas antes de acrescentar as colunas e tabelas necessárias:
+Envie o ZIP gerado e extraia os arquivos sobre a aplicação existente. Para aplicar o torneio em uma base que ainda não recebeu as migrations 013–016, rode o instalador abaixo uma vez pelo Terminal do cPanel. Ele aplica 013, 014, 015 e 016 nessa ordem, grava um backup de esquema e dados em `storage/backups/` e verifica as 12 contas. A 013 renomeia os modos antigos para `LEGACY_*`, preservando as linhas e os lançamentos; a 015 cria cinco contas novas de US$ 100.
 
 ```sh
-/opt/cpanel/ea-php82/root/usr/bin/php /home/USUARIO/public_html/trade_prometheus/deploy/migrate.php
+/opt/cpanel/ea-php82/root/usr/bin/php /home/USUARIO/public_html/trade_prometheus/deploy/upgrade_tournament.php
 ```
 
-Substitua `USUARIO`, o diretório real e o executável PHP pela versão disponível na conta. O script é idempotente. Remova o cron temporário após a migração. `cron.php` e os scripts de migração aceitam somente PHP CLI.
+Substitua `USUARIO`, o diretório real e o executável PHP pela versão disponível na conta. O banco deve já ter a base do paper trading criada pela migration 011 e o shadow pela 012. O instalador aceita somente PHP CLI. Guarde o caminho do backup e confira a mensagem `Upgrade complete` antes de encerrar.
 
 ## Agendar pelo cPanel
 

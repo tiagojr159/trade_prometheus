@@ -8,7 +8,7 @@ $out=$root.'/storage/backups/PROMETHEUS_hostgator_'.date('Ymd_His').'.zip';
 if (!is_dir(dirname($out)) && !mkdir(dirname($out),0775,true)) throw new RuntimeException('Diretório de saída indisponível.');
 $zip=new ZipArchive();if ($zip->open($out,ZipArchive::CREATE|ZipArchive::EXCL)!==true) throw new RuntimeException('Falha ao criar ZIP.');
 $include=['.htaccess','bootstrap.php','cron.php','index.php','performance.php','simulation.php',
-    'config/config.php','storage/.htaccess','deploy/.htaccess','deploy/migrate.php','deploy/database.php.example','docs/HOSTGATOR_DEPLOY.md','README.md'];
+    'config/config.php','storage/.htaccess','deploy/.htaccess','deploy/migrate.php','deploy/upgrade_tournament.php','deploy/database.php.example','docs/HOSTGATOR_DEPLOY.md','README.md'];
 foreach (['api','assets','collectors','core','cron','evaluation','indicators','intelligence','modules','prediction','sql'] as $dir) {
     $iterator=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root.'/'.$dir,FilesystemIterator::SKIP_DOTS));
     foreach ($iterator as $file) {
@@ -31,6 +31,6 @@ for ($i=0;$i<$check->numFiles;$i++) {
     $name=$check->getNameIndex($i);$names[$name]=true;
     if (preg_match('~(^research/|\.py$|^config/(database|api_keys)\.php$|^storage/(backups|research)/[^/]+$)~i',$name)) throw new RuntimeException('Arquivo não permitido no pacote: '.$name);
 }
-foreach (['cron.php','core/PaperTrader.php','deploy/migrate.php','storage/.htaccess','docs/HOSTGATOR_DEPLOY.md'] as $required) if (!isset($names[$required])) throw new RuntimeException('Arquivo obrigatório ausente: '.$required);
+foreach (['cron.php','core/PaperTrader.php','deploy/migrate.php','deploy/upgrade_tournament.php','sql/migrations/013_paper_strategy_tournament.sql','sql/migrations/014_paper_tournament_allow_sample_orders.sql','sql/migrations/015_paper_trading_twelve_strategies.sql','sql/migrations/016_paper_heartbeat_waiting_data.sql','storage/.htaccess','docs/HOSTGATOR_DEPLOY.md'] as $required) if (!isset($names[$required])) throw new RuntimeException('Arquivo obrigatório ausente: '.$required);
 $check->close();
 echo json_encode(['package'=>$out,'files'=>$count,'contains_python'=>false,'contains_local_database_credentials'=>false],JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE).PHP_EOL;
