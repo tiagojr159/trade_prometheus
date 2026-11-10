@@ -104,7 +104,17 @@ final class PaperTrader
                     $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection, $mode === 'INVERSE');
                     $decision['expected_edge_pct'] = $entryEvidence['avg_return_pct'] ?? null;
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
-                    $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
+                    // Direct and inverse are benchmark strategies: let their
+                    // current signal enter the paper tournament while the
+                    // historical edge is still being measured. MULTIHORIZON
+                    // retains its empirical net-edge gate.
+                    $this->gateEntryOnHistoricalNetEdge(
+                        $decision,
+                        $p,
+                        $config,
+                        $entryEvidence,
+                        $mode === 'MULTIHORIZON'
+                    );
                 }
                 if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG') && (float)$decision['estimated_cost_pct'] <= 0) {
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
@@ -319,8 +329,8 @@ final class PaperTrader
         ];
     }
 
-    /** Applies the empirical net-edge gate before any paper entry/reversal. */
-    private function gateEntryOnHistoricalNetEdge(array &$decision, array $p, array $config, array $evidence): void
+    /** Applies the historical edge check, optionally as a diagnostic for benchmark modes. */
+    private function gateEntryOnHistoricalNetEdge(array &$decision, array $p, array $config, array $evidence, bool $enforceHistoricalEdge): void
     {
         $action = (string)($decision['action'] ?? 'NO_TRADE');
         if (strpos($action, 'OPEN_') === false) return;
@@ -357,6 +367,20 @@ final class PaperTrader
         }
 
         if ($reason !== null) {
+            $historicalEdgeOnly = in_array('INSUFFICIENT_EDGE_HISTORY', $decision['reason_codes'] ?? [], true)
+                || in_array('NET_EDGE_TOO_LOW', $decision['reason_codes'] ?? [], true);
+            if (!$enforceHistoricalEdge && $historicalEdgeOnly) {
+                // These modes measure the forecast and its inverse prospectively.
+                // Keep the signal, report the lack of proven edge, and let the
+                // normal simulated order accounting charge fees and slippage.
+                $decision['reason_codes'] = array_values(array_unique(array_merge(
+                    $decision['reason_codes'] ?? [],
+                    ['EXPLORATORY_PAPER_SAMPLE']
+                )));
+                $decision['explanation'] = rtrim((string)($decision['explanation'] ?? ''))
+                    . ' Amostra exploratória de paper trading; custos e slippage continuam debitados no resultado.';
+                return;
+            }
             // Keep an existing position unchanged on an unqualified reversal;
             // stop, target and maximum holding time can still close it below.
             $decision['action'] = 'NO_TRADE';
