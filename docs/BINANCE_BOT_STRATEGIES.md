@@ -9,7 +9,7 @@ O torneio já tinha sete contas paper. Foram adicionadas cinco para completar do
 | `SPOT_GRID` | Spot Grid | Em regime lateral, compra perto da banda inferior e encerra ao retornar ao centro; a conta não abre short sintético. |
 | `SPOT_DCA` | Spot DCA | Compra-base após confirmação da EMA 26; permite até dois reforços após desvios baseados em ATR, atualizando preço médio e custos. |
 | `FUNDING_BIAS` | Funding Rate Arbitrage | Combina funding, razão long/short e z-score de open interest num viés contrarian de preço. É um sinal direcional de comparação, sem pernas hedgeadas. |
-| `REBALANCE` | Rebalancing Bot | Mantém a exposição simulada em BTC perto de `allocation_pct`, com banda de cinco pontos percentuais; registra compras e reduções parciais. O saldo restante representa USDT. |
+| `REBALANCE` | Rebalancing Bot | Com alta confirmada em 4h e 24h, mantém a exposição simulada em BTC perto de `allocation_pct`, com banda de cinco pontos percentuais; registra compras e reduções parciais. Baixa nos dois horizontes encerra a posição em BTC. O saldo em caixa representa USDT. |
 | `VWAP_TREND` | Volume / execução algorítmica | Exige desvio de 0,1% da VWAP de 60 candles, volume recente igual ou maior que a média, tendência de 15m e previsão na mesma direção. |
 
 A seleção cobre faixa lateral, acumulação, derivativos, alocação de portfólio e fluxo de volume. Grid foi escolhido para mercado lateral; DCA para compras em etapas; rebalanceamento para exposição BTC/USDT; funding para os dados de derivativos já coletados; VWAP para volume e confirmação intradiária. A escolha é por diversidade funcional, não por um ranking de rentabilidade ainda inexistente.

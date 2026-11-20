@@ -60,6 +60,7 @@ $migrationFiles = [
     '014_paper_tournament_allow_sample_orders.sql',
     '015_paper_trading_twelve_strategies.sql',
     '016_paper_heartbeat_waiting_data.sql',
+    '017_paper_swing_4h.sql',
 ];
 
 $runStatement = static function (string $statement) use ($db): void {
@@ -82,7 +83,7 @@ foreach ($migrationFiles as $file) {
     }
 }
 
-$expected = ['PROMETHEUS', 'MULTIHORIZON', 'INVERSE', 'MOMENTUM', 'MEAN_REVERSION', 'BREAKOUT', 'ADAPTIVE', 'SPOT_GRID', 'SPOT_DCA', 'FUNDING_BIAS', 'REBALANCE', 'VWAP_TREND'];
+$expected = array_keys(\Prometheus\core\PaperStrategyEngine::modes());
 $stmt = $db->query('SELECT mode FROM paper_trading_config ORDER BY mode');
 $modes = $stmt->fetchAll(PDO::FETCH_COLUMN);
 $missing = array_values(array_diff($expected, $modes));

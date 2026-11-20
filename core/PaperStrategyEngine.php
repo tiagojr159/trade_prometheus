@@ -16,6 +16,7 @@ final class PaperStrategyEngine
     private const MODES = [
         'PROMETHEUS' => 'PROMETHEUS · previsão direta',
         'MULTIHORIZON' => 'Multi-horizonte · confirmação',
+        'SWING_4H' => 'Tendência de 4h · confirmação de 24h',
         'INVERSE' => 'Inversa · contrária à previsão',
         'MOMENTUM' => 'Momentum · EMA 9/26',
         'MEAN_REVERSION' => 'Reversão à média · RSI/Bollinger',
@@ -38,7 +39,7 @@ final class PaperStrategyEngine
         return self::MODES;
     }
 
-    public function decide(string $mode, array $prediction, array $position, array $config, array $candles1m = [], array $candles15m = []): array
+    public function decide(string $mode, array $prediction, array $position, array $config, array $candles1m = [], array $candles15m = [], array $horizons = []): array
     {
         if ($mode === 'INVERSE') {
             $inverse = $prediction;
@@ -49,13 +50,14 @@ final class PaperStrategyEngine
             return $decision;
         }
 
+        if ($mode === 'SWING_4H') return $this->swing($prediction, $position, $config, $candles15m, $horizons);
         if ($mode === 'MOMENTUM') return $this->momentum($prediction, $position, $config, $candles1m, $candles15m, 'MOMENTUM');
         if ($mode === 'MEAN_REVERSION') return $this->meanReversion($prediction, $position, $config, $candles1m, 'MEAN_REVERSION');
         if ($mode === 'BREAKOUT') return $this->breakout($prediction, $position, $config, $candles15m);
         if ($mode === 'SPOT_GRID') return $this->grid($prediction, $position, $config, $candles1m);
         if ($mode === 'SPOT_DCA') return $this->spotDca($prediction, $position, $config, $candles1m);
         if ($mode === 'FUNDING_BIAS') return $this->fundingBias($prediction, $position, $config, $candles1m, $candles15m);
-        if ($mode === 'REBALANCE') return $this->rebalance($prediction, $position, $config, $candles1m);
+        if ($mode === 'REBALANCE') return $this->rebalance($prediction, $position, $config, $candles1m, $horizons);
         if ($mode === 'VWAP_TREND') return $this->vwapTrend($prediction, $position, $config, $candles1m, $candles15m);
         if ($mode === 'ADAPTIVE') {
             $regime = strtoupper((string)($prediction['regime'] ?? ''));
@@ -66,6 +68,30 @@ final class PaperStrategyEngine
         }
 
         return $this->result('NO_TRADE', $prediction, null, null, 0.0, ['UNKNOWN_STRATEGY'], 'Estratégia simulada desconhecida.');
+    }
+
+    private function swing(array $p, array $position, array $config, array $candles, array $horizons): array
+    {
+        $side = $position['position_side'] ?? 'FLAT';
+        $direction = $p['predicted_direction'];
+        $daily = $horizons['24h']['predicted_direction'] ?? null;
+        $opposite = $side === 'LONG' ? 'DOWN' : 'UP';
+        if ($side !== 'FLAT' && ($direction === $opposite || $daily === $opposite)) {
+            return $this->result('CLOSE_' . $side, $p, null, null, 0, ['SWING_REVERSAL'], 'A direção de 4h ou 24h virou contra a posição.');
+        }
+        $candles = array_slice($candles, -17);
+        if (count($candles) < 17 || strtotime($candles[16]['close_time']) - strtotime($candles[0]['close_time']) !== 4 * 3600
+            || strtotime($p['created_at']) - strtotime($candles[16]['close_time']) > 900) {
+            return $this->result('NO_TRADE', $p, null, null, 0, ['WARMUP'], 'Aguarda quatro horas contínuas de candles recentes.');
+        }
+        $entrySide = null;
+        if (in_array($direction, ['UP','DOWN'], true) && $direction === $daily && $direction === ($horizons['15m']['predicted_direction'] ?? null)) {
+            $entrySide = $direction === 'UP' ? 'LONG' : 'SHORT';
+        }
+        $move = ((float)$candles[16]['close_price'] / max(1e-12, (float)$candles[0]['close_price']) - 1) * 100;
+        $alignedMove = $direction === 'UP' ? $move : -$move;
+        return $this->signal($entrySide, $p, $position, $config, $alignedMove, 'SWING_4H',
+            'Previsões de 15m, 4h e 24h alinhadas. O movimento observado nas últimas 4h supera custos e margem.');
     }
 
     /** Spot-grid proxy: buy near the lower grid edge and sell near its midpoint in a range. */
@@ -113,7 +139,7 @@ final class PaperStrategyEngine
             if ($entry > 0 && $price >= $entry * (1 + $targetPct / 100)) {
                 return $this->result('CLOSE_LONG', $p, 1.0, $targetPct, $cost, ['DCA_TAKE_PROFIT'], 'Fecha a rodada DCA ao atingir o alvo sobre o preço médio.');
             }
-            if ($entries < 3 && $entry > 0 && $price <= $entry * (1 - $stepPct / 100) && (float)($p['probability_up'] ?? 0.5) >= 0.45) {
+            if ($entries < 3 && $entry > 0 && $price <= $entry * (1 - $stepPct / 100) && $p['predicted_direction'] === 'UP' && (float)$p['confidence'] >= $minConfidence) {
                 $expected = max(0.0, (($entry * (1 + $targetPct / 100)) - $price) / max(1e-12, $price) * 100);
                 if ($expected <= $cost + max(0.0, (float)($config['min_edge_pct'] ?? 0.0))) {
                     return $this->result('HOLD_LONG', $p, null, $expected, $cost, ['NET_EDGE_TOO_LOW'], 'O próximo lote DCA fica suspenso: o alvo restante não cobre custos e margem.');
@@ -130,7 +156,7 @@ final class PaperStrategyEngine
             return $this->result('NO_TRADE', $p, null, null, 0.0, ['DCA_BASE_FILTER'], 'A compra-base exige previsão de alta, preço acima da EMA 26 e regime sem queda forte.');
         }
         $atr = ATR::latest($candles1m, 14);
-        $expected = max($atr !== null && $price > 0 ? 2.0 * $atr / $price * 100 : 0.0, (float)($p['edge'] ?? 0.0) * 2.0);
+        $expected = $atr !== null && $price > 0 ? 2.0 * $atr / $price * 100 : 0.0;
         return $this->signal('LONG', $p, $position, $config, $expected, 'SPOT_DCA', 'Spot DCA: abre a compra-base com tendência curta positiva; lotes seguintes dependem de desvios definidos.');
     }
 
@@ -158,7 +184,7 @@ final class PaperStrategyEngine
     }
 
     /** Holds BTC near the configured BTC/USDT exposure using partial paper fills. */
-    private function rebalance(array $p, array $position, array $config, array $candles1m): array
+    private function rebalance(array $p, array $position, array $config, array $candles1m, array $horizons): array
     {
         $closes = $this->closes($candles1m);
         if (!$closes) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Rebalanceamento aguarda preço de referência.');
@@ -173,7 +199,15 @@ final class PaperStrategyEngine
         $band = 0.05;
         $cost = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
         $score = (float)($p['probability_up'] ?? 0.5) - (float)($p['probability_down'] ?? 0.5);
+        $medium = $horizons['4h']['predicted_direction'] ?? null;
+        $long = $horizons['24h']['predicted_direction'] ?? null;
+        if ($medium === 'DOWN' && $long === 'DOWN') {
+            return $this->result($side === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, null, $cost, ['REBALANCE_RISK_OFF'], 'Previsões de baixa em 4h e 24h. Mantém a carteira em USDT.');
+        }
         if ($weight < $target - $band) {
+            if ($medium !== 'UP' || $long !== 'UP') {
+                return $this->result($side === 'LONG' ? 'HOLD_LONG' : 'NO_TRADE', $p, $score, null, $cost, ['REBALANCE_WAIT_TREND'], 'Aguarda alta em 4h e 24h para recompor BTC.');
+            }
             $action = $side === 'FLAT' ? 'OPEN_LONG' : 'ADD_LONG';
             return $this->result($action, $p, $score, ($target - $weight) * 100, $cost, ['REBALANCE_UNDERWEIGHT'], sprintf('Exposição BTC em %.1f%%; recompõe até a faixa-alvo de %.1f%%.', $weight * 100, $target * 100));
         }
@@ -269,7 +303,8 @@ final class PaperStrategyEngine
 
     private function breakout(array $p, array $position, array $config, array $candles15m): array
     {
-        if (count($candles15m) < 13) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Rompimento aguarda 12 candles anteriores de 15 minutos.');
+        if (count($candles15m) < 15) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Rompimento aguarda 15 candles para o canal e o ATR de 14 períodos.');
+        $atr = ATR::latest($candles15m, 14);
         $current = array_pop($candles15m);
         $range = array_slice($candles15m, -12);
         $high = max(array_map(static fn(array $c): float => (float)$c['high_price'], $range));
@@ -280,7 +315,6 @@ final class PaperStrategyEngine
         $side = null;
         if ($close > $high && $volume >= $averageVolume) $side = 'LONG';
         elseif ($close < $low && $volume >= $averageVolume) $side = 'SHORT';
-        $atr = ATR::latest(array_merge($range, [$current]), 14);
         $expected = $atr !== null && $close > 0 ? $atr / $close * 100 : 0.0;
         return $this->signal($side, $p, $position, $config, $expected, 'BREAKOUT',
             'Rompimento: fechamento saiu do canal de 12 candles, com volume igual ou acima da média.');
@@ -296,6 +330,11 @@ final class PaperStrategyEngine
         }
         if ($side === 'SHORT' && empty($config['allow_short'])) return $this->result($current === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, $expected, $cost, ['SHORT_DISABLED'], 'SHORT sintético está desativado.');
         if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Mantém a posição alinhada com a regra técnica.');
+        $direction = $side === 'LONG' ? 'UP' : 'DOWN';
+        if ($p['predicted_direction'] !== $direction || (float)$p['confidence'] < (float)($config['min_confidence'] ?? 0)) {
+            $action = $current === 'FLAT' ? 'NO_TRADE' : 'CLOSE_' . $current;
+            return $this->result($action, $p, $score, $expected, $cost, ['FORECAST_NOT_CONFIRMED'], 'A direção prevista precisa confirmar o sinal técnico com a confiança mínima configurada.');
+        }
         $required = $cost + max(0.0, (float)($config['min_edge_pct'] ?? 0.0));
         if ($expected <= $required) {
             $action = $current === 'FLAT' ? 'NO_TRADE' : 'CLOSE_' . $current;

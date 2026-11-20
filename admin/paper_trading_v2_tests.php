@@ -4,6 +4,8 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/core/StrategyDecisionEngine.php';
 require_once dirname(__DIR__) . '/core/PaperTrader.php';
 require_once dirname(__DIR__) . '/core/DirectionPolicy.php';
+require_once dirname(__DIR__) . '/core/PaperStrategyEngine.php';
+require_once dirname(__DIR__) . '/indicators/ATR.php';
 require_once dirname(__DIR__) . '/evaluation/PaperTradingScenarioAnalyzer.php';
 require_once dirname(__DIR__) . '/prediction/Athena50Shadow.php';
 require_once dirname(__DIR__) . '/prediction/ProbabilityCalculator.php';
@@ -49,16 +51,46 @@ $future=$up; $future['created_at']=date('Y-m-d H:i:s',time()+600);
 ptCheck($engine->decide('DIRECTIONAL',$future,[],$flat,$config,[],true)['reason_codes']===['FUTURE_PREDICTION'],'previsão com created_at futuro é rejeitada');
 
 $horizons=['15m'=>ptPrediction('UP',.90),'1h'=>ptPrediction('UP',.85)];
-$evidence=['n'=>40,'avg_abs_return_pct'=>1.0];
+$evidence=['n'=>40,'avg_return_pct'=>1.0];
 $strategy=$engine->decide('STRATEGY',$up,$horizons,$flat,$config,$evidence,true);
 ptCheck($strategy['action']==='OPEN_LONG' && $strategy['expected_edge_pct']>$strategy['estimated_cost_pct'],'STRATEGY opera somente com confirmação e expectativa acima dos custos');
 $disagree=$horizons; $disagree['1h']=ptPrediction('DOWN',.2);
 ptCheck($engine->decide('STRATEGY',$up,$disagree,$flat,$config,$evidence,true)['action']==='NO_TRADE','discordância entre horizontes resulta em NO_TRADE');
-ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$config,['n'=>10,'avg_abs_return_pct'=>1.0],true)['reason_codes']===['INSUFFICIENT_HISTORY'],'amostra histórica insuficiente não abre trade');
+ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$config,['n'=>10,'avg_return_pct'=>1.0],true)['reason_codes']===['INSUFFICIENT_HISTORY'],'amostra histórica insuficiente não abre trade');
 $highCost=$config; $highCost['fee_pct']=1.0; $highCost['slippage_pct']=.5;
 ptCheck($engine->decide('STRATEGY',$up,$horizons,$flat,$highCost,$evidence,true)['reason_codes']===['NET_EDGE_TOO_LOW'],'cenário de custo alto fica fora');
 $volatile=$up;$volatile['regime']='HIGH_VOLATILITY';$riskConfig=$config+['avoid_volatile'=>1];
 ptCheck($engine->decide('STRATEGY',$volatile,$horizons,$flat,$riskConfig,$evidence,true)['reason_codes']===['REGIME_FILTER'],'filtro de regime volátil é configurável no modo estratégia');
+
+$technical = new \Prometheus\core\PaperStrategyEngine();
+$candles = [];
+$start = strtotime($up['created_at']) - 4 * 3600;
+for ($i = 0; $i <= 16; $i++) {
+    $close = $i === 16 ? 107 : 100 + $i * .2;
+    $candles[] = ['close_time'=>date('Y-m-d H:i:s', $start + $i * 900), 'close_price'=>$close,
+        'high_price'=>$close+.5, 'low_price'=>$close-.5, 'volume'=>10];
+}
+$breakout = $technical->decide('BREAKOUT', $up, $flat, $config, [], $candles);
+ptCheck($breakout['action'] === 'OPEN_LONG' && $breakout['expected_edge_pct'] > .27, 'Rompimento calcula ATR com histórico suficiente para abrir');
+ptCheck($technical->decide('BREAKOUT', $down, $flat, $config, [], $candles)['action'] === 'NO_TRADE', 'Previsão contrária bloqueia compra técnica');
+$confirmed = ['15m'=>$up, '24h'=>$up];
+ptCheck($technical->decide('SWING_4H', $up, $flat, $config, [], $candles, $confirmed)['action'] === 'OPEN_LONG', 'Tendência de 4h exige confirmação e deslocamento acima dos custos');
+ptCheck($technical->decide('SWING_4H', $up, $flat, $config, [], $candles, ['15m'=>$up])['action'] === 'NO_TRADE', 'Tendência aguarda previsão diária disponível');
+ptCheck($technical->decide('SWING_4H', $up, ['position_side'=>'LONG'], $config, [], [], ['24h'=>$down])['action'] === 'CLOSE_LONG', 'Inversão de 24h protege posição já aberta');
+ptCheck($technical->decide('REBALANCE', $down, ['position_side'=>'LONG'], $config, $candles, [], ['4h'=>$down, '24h'=>$down])['action'] === 'CLOSE_LONG', 'Rebalanceamento passa para caixa na baixa confirmada');
+$paperTrader = new PaperTrader();
+$netGate = new ReflectionMethod(PaperTrader::class, 'gateEntryOnHistoricalNetEdge');
+$netGate->setAccessible(true);
+foreach (['OPEN_LONG'=>'NO_TRADE', 'CLOSE_SHORT+OPEN_LONG'=>'CLOSE_SHORT'] as $proposed=>$expectedAction) {
+    $candidate = ['action'=>$proposed];
+    $args = [&$candidate, $up, $config, ['n'=>40, 'avg_return_pct'=>.1, 'stddev_pct'=>.2]];
+    $netGate->invokeArgs($paperTrader, $args);
+    ptCheck($candidate['action'] === $expectedAction, 'Custos bloqueiam a entrada proposta em '.$proposed);
+}
+$candidate = ['action'=>'OPEN_SHORT'];
+$args = [&$candidate, $down, $config, ['n'=>40, 'avg_return_pct'=>1.0, 'stddev_pct'=>.2]];
+$netGate->invokeArgs($paperTrader, $args);
+ptCheck($candidate['action'] === 'OPEN_SHORT', 'Amostra com vantagem suficiente permite entrada');
 
 $schema=(string)file_get_contents(dirname(__DIR__).'/sql/migrations/011_paper_trading_v2.sql');
 $underwaterShort=['position_side'=>'SHORT','cash_balance'=>74.9,'reserved_cash'=>25.0,'entry_price'=>100.0,'quantity_btc'=>1.0];

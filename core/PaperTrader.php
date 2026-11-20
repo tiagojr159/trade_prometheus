@@ -42,7 +42,7 @@ final class PaperTrader
             $accountStmt = $pdo->prepare('SELECT * FROM paper_trading_v2_accounts WHERE mode=? FOR UPDATE');
             $accountStmt->execute([$mode]);
             $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$config || !$account) throw new \RuntimeException('Aplique as migrations 013 a 015 do torneio de estratégias paper em ordem.');
+            if (!$config || !$account) throw new \RuntimeException('Aplique as migrations 013 a 017 do torneio de estratégias paper em ordem.');
             $pdo->prepare('UPDATE paper_trading_heartbeat SET status=?,last_started_at=NOW(),last_error=NULL WHERE mode=?')->execute([(int)$config['enabled'] ? 'ACTIVE' : 'STOPPED', $mode]);
             if (!(int)$config['enabled']) {
                 $pdo->commit();
@@ -59,16 +59,23 @@ final class PaperTrader
 
             $riskClosed = false;
             $riskReason = $this->riskExit($account, (float)$market['close_price'], $config);
+            $forecastMode = in_array($mode, ['PROMETHEUS', 'MULTIHORIZON', 'INVERSE'], true);
+            if (($forecastMode || $mode === 'SWING_4H') && $riskReason === null && $account['position_side'] !== 'FLAT') {
+                $entry = Database::fetch('SELECT target_time FROM predictions WHERE id=?', [$account['entry_prediction_id']]);
+                if ($entry && $market['close_time'] >= $entry['target_time']) {
+                    $riskReason = 'Vencimento da previsão que originou a posição.';
+                }
+            }
             if ($riskReason !== null && $account['position_side'] !== 'FLAT') {
                 $riskClosed = $this->closeOnMarketRisk($pdo, $mode, $account, $market, $config, $riskReason);
             }
 
             $predictions = Database::fetchAll(
                 'SELECT p.*,1 AS is_fresh FROM predictions p LEFT JOIN paper_trading_decisions d ON d.prediction_id=p.id AND d.mode=?
-                 WHERE p.symbol=? AND p.horizon="15m" AND d.id IS NULL AND p.created_at<=NOW()
+                 WHERE p.symbol=? AND p.horizon=? AND d.id IS NULL AND p.created_at<=NOW() AND p.target_time>NOW()
                    AND p.created_at>=DATE_SUB(NOW(), INTERVAL 5 MINUTE)
                  ORDER BY p.created_at DESC,p.id DESC LIMIT 1',
-                [$mode, $symbol]
+                [$mode, $symbol, $mode === 'SWING_4H' ? '4h' : '15m']
             );
             $processed = 0; $lastDecision = $riskClosed ? 'CLOSE_RISK' : null; $lastPrediction = null; $lastReason = $riskClosed ? $riskReason : null;
             foreach ($predictions as $p) {
@@ -82,39 +89,28 @@ final class PaperTrader
                     $dcaCount->execute([$mode, $account['entry_at']]);
                     $account['dca_entries'] = (int)$dcaCount->fetchColumn();
                 }
-                $horizons = $mode === 'MULTIHORIZON' ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
-                $evidence = $mode === 'MULTIHORIZON' ? $this->historicalMagnitude($pdo, $p) : [];
+                $horizons = in_array($mode, ['MULTIHORIZON','REBALANCE','SWING_4H'], true) ? $this->knownHorizons($pdo, $symbol, (string)$p['created_at']) : [];
+                $evidence = $mode === 'MULTIHORIZON' ? $this->historicalDirectionalEdge($pdo, $symbol, $p, $p['predicted_direction']) : [];
                 if ($mode === 'PROMETHEUS' || $mode === 'MULTIHORIZON') {
                     $decisionMode = $mode === 'PROMETHEUS' ? 'DIRECTIONAL' : 'STRATEGY';
                     $decision = $this->decisionEngine->decide($decisionMode, $p, $horizons, $account, $config, $evidence, $fresh);
                 } else {
                     $candles1m = $this->historicalCandles($pdo, $symbol, '1m', (string)$p['created_at'], 100);
                     $candles15m = $this->historicalCandles($pdo, $symbol, '15m', (string)$p['created_at'], 25);
-                    $decision = $this->paperStrategies->decide($mode, $p, $account, $config, $candles1m, $candles15m);
+                    $decision = $this->paperStrategies->decide($mode, $p, $account, $config, $candles1m, $candles15m, $horizons);
                 }
                 if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG')
                     && !empty($config['avoid_volatile'])
                     && in_array(strtoupper((string)($p['regime'] ?? '')), ['VOLATILE', 'HIGH_VOLATILITY'], true)) {
-                    $decision['action'] = 'NO_TRADE';
+                    $decision['action'] = explode('+', $decision['action'])[0];
+                    if (strpos($decision['action'], 'CLOSE_') !== 0) $decision['action'] = 'NO_TRADE';
                     $decision['reason_codes'] = ['REGIME_FILTER'];
                     $decision['explanation'] = 'Entrada bloqueada: filtro de alta volatilidade ativo para todas as estratégias.';
                 }
-                if (in_array($mode, ['PROMETHEUS', 'MULTIHORIZON', 'INVERSE'], true) && strpos((string)$decision['action'], 'OPEN_') !== false) {
+                if ($forecastMode && strpos((string)$decision['action'], 'OPEN_') !== false) {
                     $entryDirection = strpos((string)$decision['action'], 'OPEN_SHORT') !== false ? 'DOWN' : 'UP';
-                    $entryEvidence = $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection, $mode === 'INVERSE');
-                    $decision['expected_edge_pct'] = $entryEvidence['avg_return_pct'] ?? null;
-                    $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
-                    // Direct and inverse are benchmark strategies: let their
-                    // current signal enter the paper tournament while the
-                    // historical edge is still being measured. MULTIHORIZON
-                    // retains its empirical net-edge gate.
-                    $this->gateEntryOnHistoricalNetEdge(
-                        $decision,
-                        $p,
-                        $config,
-                        $entryEvidence,
-                        $mode === 'MULTIHORIZON'
-                    );
+                    $entryEvidence = $evidence ?: $this->historicalDirectionalEdge($pdo, $symbol, $p, $entryDirection, $mode === 'INVERSE');
+                    $this->gateEntryOnHistoricalNetEdge($decision, $p, $config, $entryEvidence);
                 }
                 if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG') && (float)$decision['estimated_cost_pct'] <= 0) {
                     $decision['estimated_cost_pct'] = 2.0 * ((float)$config['fee_pct'] + (float)$config['slippage_pct']);
@@ -139,13 +135,6 @@ final class PaperTrader
                         $decision['reason_codes'] = ['COOLDOWN'];
                         $decision['explanation'] = 'O intervalo mínimo entre ordens está ativo; aguarda antes de abrir uma nova posição.';
                     }
-                }
-
-                $riskExit = $this->riskExit($account, (float)$market['close_price'], $config);
-                if ($riskExit !== null && $account['position_side'] !== 'FLAT') {
-                    $decision['action'] = 'CLOSE_' . $account['position_side'];
-                    $decision['reason_codes'] = ['RISK_EXIT'];
-                    $decision['explanation'] = $riskExit;
                 }
 
                 $regime = Database::fetch('SELECT regime,confidence FROM market_regimes WHERE created_at<=? ORDER BY created_at DESC,id DESC LIMIT 1', [$p['created_at']]);
@@ -194,7 +183,7 @@ final class PaperTrader
             $latestHandled = Database::fetch('SELECT last_prediction_id,last_decision,last_reason FROM paper_trading_heartbeat WHERE mode=?', [$mode]);
             $heartbeatId = $lastPrediction ?? ($latestHandled['last_prediction_id'] ?? null);
             $heartbeatDecision = $lastDecision ?? ($latestHandled['last_decision'] ?? 'NO_TRADE');
-            $heartbeatReason = ($processed || $riskClosed) ? $lastReason : ($latestHandled['last_reason'] ?? 'Nenhuma previsão nova de 15m aguardando decisão.');
+            $heartbeatReason = ($processed || $riskClosed) ? $lastReason : ($latestHandled['last_reason'] ?? 'Aguardando a próxima previsão da estratégia.');
             if ($processed === 0) {
                 $equity=$this->equity($account,(float)$market['close_price'],$config);
                 $peak=max((float)$account['peak_equity'],$equity);
@@ -242,8 +231,8 @@ final class PaperTrader
     {
         $out=[];
         foreach (['15m'=>1800,'1h'=>7200,'4h'=>28800,'24h'=>172800] as $horizon=>$maxAge) {
-            $stmt=$pdo->prepare('SELECT * FROM predictions WHERE symbol=? AND horizon=? AND created_at<=? AND created_at>=DATE_SUB(?,INTERVAL ? SECOND) ORDER BY created_at DESC,id DESC LIMIT 1');
-            $stmt->execute([$symbol,$horizon,$asOf,$asOf,$maxAge]);
+            $stmt=$pdo->prepare('SELECT predicted_direction,probability_up,probability_down,confidence FROM predictions WHERE symbol=? AND horizon=? AND created_at<=? AND target_time>? AND created_at>=DATE_SUB(?,INTERVAL ? SECOND) ORDER BY created_at DESC,id DESC LIMIT 1');
+            $stmt->execute([$symbol,$horizon,$asOf,$asOf,$asOf,$maxAge]);
             $row=$stmt->fetch(PDO::FETCH_ASSOC); if($row)$out[$horizon]=$row;
         }
         return $out;
@@ -267,12 +256,6 @@ final class PaperTrader
         );
         $stmt->execute([$symbol, $interval, $asOf, $utcCutoff, $utcCutoff]);
         return array_reverse($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []);
-    }
-
-    private function historicalMagnitude(PDO $pdo, array $p): array
-    {
-        $rows=Database::fetch('SELECT COUNT(*) n,AVG(ABS(r.return_pct)) avg_abs_return_pct FROM predictions p JOIN prediction_results r ON r.prediction_id=p.id WHERE p.horizon=? AND p.regime=? AND p.created_at<? AND r.evaluated_at<=? AND r.evaluation_version=2 AND r.actual_direction IN ("UP","DOWN")',[$p['horizon'],$p['regime'],$p['created_at'],$p['created_at']]);
-        return ['n'=>(int)($rows['n']??0),'avg_abs_return_pct'=>$rows&&$rows['avg_abs_return_pct']!==null?(float)$rows['avg_abs_return_pct']:null];
     }
 
     /**
@@ -299,7 +282,7 @@ final class PaperTrader
                AND (CASE WHEN p.predicted_direction="UP" THEN p.probability_up ELSE p.probability_down END)>=?
                AND (CASE WHEN p.predicted_direction="UP" THEN p.probability_up ELSE p.probability_down END)<?
                AND p.created_at<? AND r.evaluated_at<=? AND r.evaluation_version=2
-               AND r.actual_direction IN ("UP","DOWN")
+               AND r.return_pct IS NOT NULL AND r.actual_direction IN ("UP","DOWN","FLAT")
              ORDER BY p.created_at DESC,p.id DESC LIMIT 5000',
             [$inverse ? -1.0 : 1.0, $symbol, $p['horizon'], $p['regime'], $forecastDirection, $probabilityFloor, $probabilityCeiling, $p['created_at'], $p['created_at']]
         );
@@ -329,8 +312,7 @@ final class PaperTrader
         ];
     }
 
-    /** Applies the historical edge check, optionally as a diagnostic for benchmark modes. */
-    private function gateEntryOnHistoricalNetEdge(array &$decision, array $p, array $config, array $evidence, bool $enforceHistoricalEdge): void
+    private function gateEntryOnHistoricalNetEdge(array &$decision, array $p, array $config, array $evidence): void
     {
         $action = (string)($decision['action'] ?? 'NO_TRADE');
         if (strpos($action, 'OPEN_') === false) return;
@@ -367,23 +349,7 @@ final class PaperTrader
         }
 
         if ($reason !== null) {
-            $historicalEdgeOnly = in_array('INSUFFICIENT_EDGE_HISTORY', $decision['reason_codes'] ?? [], true)
-                || in_array('NET_EDGE_TOO_LOW', $decision['reason_codes'] ?? [], true);
-            if (!$enforceHistoricalEdge && $historicalEdgeOnly) {
-                // These modes measure the forecast and its inverse prospectively.
-                // Keep the signal, report the lack of proven edge, and let the
-                // normal simulated order accounting charge fees and slippage.
-                $decision['reason_codes'] = array_values(array_unique(array_merge(
-                    $decision['reason_codes'] ?? [],
-                    ['EXPLORATORY_PAPER_SAMPLE']
-                )));
-                $decision['explanation'] = rtrim((string)($decision['explanation'] ?? ''))
-                    . ' Amostra exploratória de paper trading; custos e slippage continuam debitados no resultado.';
-                return;
-            }
-            // Keep an existing position unchanged on an unqualified reversal;
-            // stop, target and maximum holding time can still close it below.
-            $decision['action'] = 'NO_TRADE';
+            $decision['action'] = strpos($action, 'CLOSE_') === 0 ? explode('+', $action)[0] : 'NO_TRADE';
             $decision['explanation'] = $reason;
         }
     }
