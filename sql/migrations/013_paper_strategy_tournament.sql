@@ -19,7 +19,7 @@ SET @has_avoid_volatile = (
 SET @add_avoid_volatile_sql = IF(
   @has_avoid_volatile = 0,
   'ALTER TABLE paper_trading_config ADD COLUMN avoid_volatile TINYINT(1) NOT NULL DEFAULT 1 AFTER allow_short',
-  'SELECT 1'
+  'DO 0'
 );
 PREPARE add_avoid_volatile_stmt FROM @add_avoid_volatile_sql;
 EXECUTE add_avoid_volatile_stmt;

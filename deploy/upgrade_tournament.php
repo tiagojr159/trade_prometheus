@@ -61,6 +61,7 @@ $migrationFiles = [
     '015_paper_trading_twelve_strategies.sql',
     '016_paper_heartbeat_waiting_data.sql',
     '017_paper_swing_4h.sql',
+    '018_leveraged_strategies_10_27.sql',
 ];
 
 $runStatement = static function (string $statement) use ($db): void {

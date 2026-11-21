@@ -5,7 +5,7 @@ namespace Prometheus\core;
 
 use PDO;
 
-/** Long/short, no-leverage paper simulator with an auditable point-in-time decision ledger. */
+/** Long/short paper simulator with isolated-margin leverage and an auditable point-in-time decision ledger. */
 final class PaperTrader
 {
     private StrategyDecisionEngine $decisionEngine;
@@ -96,7 +96,7 @@ final class PaperTrader
                     $decision = $this->decisionEngine->decide($decisionMode, $p, $horizons, $account, $config, $evidence, $fresh);
                 } else {
                     $candles1m = $this->historicalCandles($pdo, $symbol, '1m', (string)$p['created_at'], 100);
-                    $candles15m = $this->historicalCandles($pdo, $symbol, '15m', (string)$p['created_at'], 25);
+                    $candles15m = $this->historicalCandles($pdo, $symbol, '15m', (string)$p['created_at'], in_array($mode, ['STRATEGY_10_10X'], true) ? 60 : 25);
                     $decision = $this->paperStrategies->decide($mode, $p, $account, $config, $candles1m, $candles15m, $horizons);
                 }
                 if ((strpos((string)$decision['action'], 'OPEN_') !== false || $decision['action'] === 'ADD_LONG')
@@ -359,6 +359,8 @@ final class PaperTrader
         if ($account['position_side']==='FLAT'||(float)$account['quantity_btc']<=0||(float)$account['entry_price']<=0) return null;
         $entry=(float)$account['entry_price']; $side=$account['position_side'];
         $return=(($price-$entry)/$entry*100)*($side==='LONG'?1:-1);
+        $leverage=max(1.0,(float)($config['leverage']??1.0));
+        if($leverage>1.0&&$return<=-(90.0/$leverage))return 'LIQUIDATION: margem isolada consumida pelo movimento adverso.';
         if($return<=-(float)$config['stop_loss_pct'])return 'Stop de risco atingido; encerra a posição simulada.';
         if($return>=(float)$config['take_profit_pct'])return 'Alvo de risco atingido; encerra a posição simulada.';
         if($account['entry_at']&&time()-strtotime((string)$account['entry_at'])>=(int)$config['max_position_minutes']*60)return 'Tempo máximo da posição atingido.';
@@ -388,12 +390,14 @@ final class PaperTrader
         $reference=(float)$market['close_price']; $slipPct=(float)$config['slippage_pct'];
         $fill=$reference*($side==='LONG'?1+$slipPct/100:1-$slipPct/100);
         $equity=max(0.0,$this->equity($account,$reference,$config)); $budget=$equity*min(100.0,(float)$config['allocation_pct'])/100.0;
-        if($side==='LONG')$budget=min($budget,(float)$account['cash_balance']);
-        else $budget=min($budget,(float)$account['cash_balance']);
-        $qty=$budget/max(1e-12,$fill*(1+(float)$config['fee_pct']/100));
+        $leverage=max(1.0,(float)($config['leverage']??1.0));
+        $budget=min($budget,(float)$account['cash_balance']);
+        $notionalBudget=$budget*$leverage;
+        $qty=$notionalBudget/max(1e-12,$fill*(1+(float)$config['fee_pct']/100));
         if($qty<=0)return;
         $notional=$fill*$qty; $fee=$notional*(float)$config['fee_pct']/100; $slippage=abs($fill-$reference)*$qty;
-        if($side==='LONG')$account['cash_balance']=max(0.0,(float)$account['cash_balance']-$notional-$fee);
+        if($leverage>1.0){$account['cash_balance']=max(0.0,(float)$account['cash_balance']-$budget-$fee);$account['reserved_cash']=$budget;}
+        elseif($side==='LONG')$account['cash_balance']=max(0.0,(float)$account['cash_balance']-$notional-$fee);
         else {$account['cash_balance']=max(0.0,(float)$account['cash_balance']-$budget-$fee);$account['reserved_cash']=$budget;}
         $account['position_side']=$side;$account['quantity_btc']=$qty;$account['entry_price']=$fill;
         $account['entry_market_data_id']=$market['id'];$account['entry_prediction_id']=$p['id'];$account['entry_at']=$market['close_time'];
@@ -472,9 +476,12 @@ final class PaperTrader
         $fill=$reference*($side==='LONG'?1-(float)$config['slippage_pct']/100:1+(float)$config['slippage_pct']/100);
         $notional=$fill*$qty;$fee=$notional*(float)$config['fee_pct']/100;
         $gross=($fill-$entry)*$qty*($side==='LONG'?1:-1);$slippage=abs($fill-$reference)*$qty;
+        $leverage=max(1.0,(float)($config['leverage']??1.0));
+        if($leverage>1.0&&strpos($reason,'LIQUIDATION:')===0)$gross=max($gross,-(float)$account['reserved_cash']);
         $allFees=(float)$account['entry_fee_usd']+$fee;$allSlippage=(float)$account['entry_slippage_usd']+$slippage;
         $net=$gross-$allFees;
-        if($side==='LONG')$account['cash_balance']+=(float)$fill*$qty-$fee;
+        if($leverage>1.0)$account['cash_balance']+=(float)$account['reserved_cash']+$gross-$fee;
+        elseif($side==='LONG')$account['cash_balance']+=(float)$fill*$qty-$fee;
         else $account['cash_balance']+=(float)$account['reserved_cash']+$gross-$fee;
         $account['cash_balance']=max(0.0,(float)$account['cash_balance']);
         $pdo->prepare('INSERT INTO paper_trading_v2_trades (mode,side,entry_prediction_id,exit_prediction_id,entry_market_data_id,exit_market_data_id,entry_at,exit_at,entry_price,exit_price,quantity_btc,gross_pnl,fees_usd,slippage_usd,net_pnl,entry_reason,exit_reason,hold_seconds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -501,15 +508,18 @@ final class PaperTrader
     {
         $side=$pdoAccount['position_side']??'FLAT';$qty=(float)($pdoAccount['quantity_btc']??0);$cash=(float)($pdoAccount['cash_balance']??0);
         $exitCost=$qty*$price*(((float)($config['fee_pct']??0)+(float)($config['slippage_pct']??0))/100.0);
+        if($side==='LONG'&&max(1.0,(float)($config['leverage']??1.0))>1.0)return max(0.0,$cash+(float)($pdoAccount['reserved_cash']??0)+$this->unrealized($pdoAccount,$price)-$exitCost);
         if($side==='LONG')return max(0.0,$cash+$qty*$price-$exitCost);
         if($side==='SHORT')return max(0.0,$cash+(float)($pdoAccount['reserved_cash']??0)+$this->unrealized($pdoAccount,$price)-$exitCost);
         return $cash;
     }
 
-    public static function markedEquity(array $account,float $price,float $exitCostPct=0.0): float
+    public static function markedEquity(array $account,float $price,float $exitCostPct=0.0,float $leverage=1.0): float
     {
         $side=$account['position_side']??'FLAT';$qty=(float)($account['quantity_btc']??0);$cash=(float)($account['cash_balance']??0);
         $exitCost=$qty*$price*max(0.0,$exitCostPct)/100.0;
+        $unrealized=$side==='FLAT'?0.0:($price-(float)($account['entry_price']??0))*$qty*($side==='LONG'?1:-1);
+        if($side==='LONG'&&$leverage>1.0)return max(0.0,$cash+(float)($account['reserved_cash']??0)+$unrealized-$exitCost);
         if($side==='LONG')return max(0.0,$cash+$qty*$price-$exitCost);
         if($side==='SHORT'){
             $unrealized=($price-(float)($account['entry_price']??0))*$qty*-1;

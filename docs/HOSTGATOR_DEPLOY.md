@@ -12,7 +12,7 @@ C:\xampp\php\php.exe deploy\package.php
 
 O ZIP é criado em `storage/backups/`. Ele exclui credenciais locais, snapshots, backups, testes e scripts Python. Confira o nome do ZIP retornado pelo comando e extraia seu conteúdo no diretório da aplicação na hospedagem. Crie `config/database.php` no servidor a partir de `deploy/database.php.example`, preenchendo o nome, usuário e senha do MySQL do cPanel. O banco da hospedagem terá nomes próprios do cPanel; `localhost` só funciona se o MySQL estiver no mesmo servidor.
 
-Envie o ZIP gerado e extraia os arquivos sobre a aplicação existente. Para aplicar o torneio em uma base que ainda não recebeu as migrations 013–017, rode o instalador abaixo uma vez pelo Terminal do cPanel. Ele aplica 013, 014, 015, 016 e 017 nessa ordem, grava um backup de esquema e dados em `storage/backups/` e verifica as 13 contas. A 013 renomeia os modos antigos para `LEGACY_*`, preservando as linhas e os lançamentos; a 015 cria cinco contas novas de US$ 100.
+Envie o ZIP gerado e extraia os arquivos sobre a aplicação existente. Para aplicar o torneio em uma base que ainda não recebeu as migrations 013–018, rode o instalador abaixo pelo Terminal do cPanel. Ele aplica as migrations em ordem, grava um backup de esquema e dados em `storage/backups/` e verifica as contas do torneio. A 013 renomeia os modos antigos para `LEGACY_*`, preservando as linhas e os lançamentos; a 015 cria cinco contas novas; a 018 cria duas contas isoladas com alavancagem 10x para Donchian 55 e PVT.
 
 ```sh
 /opt/cpanel/ea-php82/root/usr/bin/php /home/USUARIO/public_html/trade_prometheus/deploy/upgrade_tournament.php

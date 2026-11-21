@@ -27,6 +27,8 @@ final class PaperStrategyEngine
         'FUNDING_BIAS' => 'Funding · viés de carregamento',
         'REBALANCE' => 'Rebalanceamento · BTC/USDT',
         'VWAP_TREND' => 'VWAP · preço e volume',
+        'STRATEGY_10_10X' => 'Estrategia 10 - Donchian 55 - 10x',
+        'STRATEGY_27_10X' => 'Estrategia 27 - PVT - 10x',
     ];
 
     public function __construct(?StrategyDecisionEngine $directional = null)
@@ -59,6 +61,8 @@ final class PaperStrategyEngine
         if ($mode === 'FUNDING_BIAS') return $this->fundingBias($prediction, $position, $config, $candles1m, $candles15m);
         if ($mode === 'REBALANCE') return $this->rebalance($prediction, $position, $config, $candles1m, $horizons);
         if ($mode === 'VWAP_TREND') return $this->vwapTrend($prediction, $position, $config, $candles1m, $candles15m);
+        if ($mode === 'STRATEGY_10_10X') return $this->donchian55($prediction, $position, $config, $candles15m);
+        if ($mode === 'STRATEGY_27_10X') return $this->priceVolumeTrend($prediction, $position, $config, $candles1m);
         if ($mode === 'ADAPTIVE') {
             $regime = strtoupper((string)($prediction['regime'] ?? ''));
             if (in_array($regime, ['BULLISH', 'BEARISH'], true)) return $this->momentum($prediction, $position, $config, $candles1m, $candles15m, 'ADAPTIVE_TREND');
@@ -318,6 +322,43 @@ final class PaperStrategyEngine
         $expected = $atr !== null && $close > 0 ? $atr / $close * 100 : 0.0;
         return $this->signal($side, $p, $position, $config, $expected, 'BREAKOUT',
             'Rompimento: fechamento saiu do canal de 12 candles, com volume igual ou acima da média.');
+    }
+
+    /** Strategy 10: Donchian 55 breakout, forecast-confirmed. */
+    private function donchian55(array $p, array $position, array $config, array $candles15m): array
+    {
+        if (count($candles15m) < 57) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'Donchian 55 aguarda 55 candles fechados e um candle de rompimento.');
+        $current = array_pop($candles15m);
+        $channel = array_slice($candles15m, -55);
+        $high = max(array_map(static fn(array $c): float => (float)$c['high_price'], $channel));
+        $low = min(array_map(static fn(array $c): float => (float)$c['low_price'], $channel));
+        $close = (float)$current['close_price'];
+        $side = $close > $high ? 'LONG' : ($close < $low ? 'SHORT' : null);
+        $atr = ATR::latest($candles15m, 14);
+        $expected = $atr !== null && $close > 0 ? 2.0 * $atr / $close * 100 : 0.0;
+        return $this->signal($side, $p, $position, $config, $expected, 'STRATEGY_10_10X',
+            'Estratégia 10: rompimento do canal Donchian de 55 candles, confirmado pela previsão de 15 minutos.');
+    }
+
+    /** Strategy 27: Price Volume Trend slope, forecast-confirmed. */
+    private function priceVolumeTrend(array $p, array $position, array $config, array $candles1m): array
+    {
+        if (count($candles1m) < 31) return $this->result('NO_TRADE', $p, null, null, 0.0, ['WARMUP'], 'PVT aguarda 30 candles de um minuto.');
+        $candles = array_slice($candles1m, -31);
+        $pvt = [0.0];
+        for ($i = 1; $i < count($candles); $i++) {
+            $previous = (float)$candles[$i - 1]['close_price'];
+            $close = (float)$candles[$i]['close_price'];
+            $volume = (float)$candles[$i]['volume'];
+            $pvt[] = end($pvt) + ($previous > 0 ? (($close - $previous) / $previous) * $volume : 0.0);
+        }
+        $recent = array_slice($pvt, -8);
+        $change = (float)end($recent) - (float)$recent[0];
+        $price = (float)end($candles)['close_price'];
+        $side = $change > 0 ? 'LONG' : ($change < 0 ? 'SHORT' : null);
+        $expected = abs($price - (float)$candles[0]['close_price']) / max(1e-12, $price) * 100;
+        return $this->signal($side, $p, $position, $config, $expected, 'STRATEGY_27_10X',
+            'Estratégia 27: inclinação do PVT nos últimos 8 candles, confirmada pela previsão de 15 minutos.');
     }
 
     private function signal(?string $side, array $p, array $position, array $config, float $expected, string $label, string $reason): array
