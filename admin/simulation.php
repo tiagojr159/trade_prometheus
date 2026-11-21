@@ -4,12 +4,17 @@ require_once dirname(__DIR__) . '/bootstrap.php';
 
 use Prometheus\admin\AdminGuard;
 use Prometheus\core\Database;
+use Prometheus\core\PaperTournamentAutoInstaller;
 use Prometheus\core\PaperTrader;
 use Prometheus\core\PaperStrategyEngine;
 use Prometheus\evaluation\PaperTradingScenarioAnalyzer;
 use Prometheus\prediction\Athena50CorrelationAnalyzer;
 
 AdminGuard::requireAdmin();
+// First authenticated visit applies pending tournament upgrades once; installer uses a DB lock and creates a backup first.
+$autoInstallError=null;
+try { PaperTournamentAutoInstaller::ensureInstalled(); }
+catch(Throwable $installError) { $autoInstallError=$installError->getMessage(); }
 if (session_status() === PHP_SESSION_NONE) session_start();
 $symbol=prometheus_config('default_symbol','BTCUSDT');
 $strategyModes=PaperStrategyEngine::modes();
@@ -35,7 +40,7 @@ $requestedMode=(string)($_GET['mode']??'PROMETHEUS');
 $mode=array_key_exists($requestedMode,$strategyModes)?$requestedMode:'PROMETHEUS';
 $csrf=(string)($_SESSION['paper_trading_csrf']??'');
 if($csrf===''){ $csrf=bin2hex(random_bytes(32)); $_SESSION['paper_trading_csrf']=$csrf; }
-$notice=null;$error=null;$config=null;$account=null;$heartbeat=null;$riskEvent=null;$priceRow=null;$predictions=[];$decisions=[];$trades=[];$curve=[];$btcPriceSeries=[];$forecastUp=[];$forecastDown=[];$forecastNeutral=[];$forecastHits=[];$forecastMisses=[];$forecastResultNeutral=[];$moduleSignals=[];$stats=[];$athenaStats=[];$athenaAblations=[];$candidateStats=[];$researchModes=[];$costScenarios=[];$featureCorrelation=[];$ready=true;$temporalSchemaReady=true;
+$notice=null;$error=$autoInstallError;$config=null;$account=null;$heartbeat=null;$riskEvent=null;$priceRow=null;$predictions=[];$decisions=[];$trades=[];$curve=[];$btcPriceSeries=[];$forecastUp=[];$forecastDown=[];$forecastNeutral=[];$forecastHits=[];$forecastMisses=[];$forecastResultNeutral=[];$moduleSignals=[];$stats=[];$athenaStats=[];$athenaAblations=[];$candidateStats=[];$researchModes=[];$costScenarios=[];$featureCorrelation=[];$ready=true;$temporalSchemaReady=true;
 
 if(($_SERVER['REQUEST_METHOD']??'')==='POST'&&isset($_POST['save_config'])){
     if(!isset($_POST['csrf'])||!hash_equals($csrf,(string)$_POST['csrf']))$error='A sessão expirou. Atualize a página e tente novamente.';
@@ -151,7 +156,7 @@ function ptPct(float $n):string{return ($n>0?'+':'').number_format($n,2,',','.')
 <nav class="navbar navbar-expand-lg border-bottom"><div class="container-fluid px-4"><a class="navbar-brand fw-bold" href="../index.php">PROMETHEUS</a><div class="navbar-nav"><a class="nav-link" href="dashboard.php">Previsões</a><a class="nav-link active" href="simulation.php">Paper trading</a><a class="nav-link" href="modules.php">Módulos</a><a class="nav-link" href="performance.php">Desempenho</a><a class="nav-link" href="settings.php">Configurações</a></div><span class="navbar-text ms-auto">BTC/USDT · <?=htmlspecialchars($priceRow['close_time']??'sem cotação',ENT_QUOTES,'UTF-8')?></span></div></nav>
 <main class="container-fluid p-4"><div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3"><div><h1 class="h3 mb-1">Torneio de paper trading</h1><p class="text-muted mb-0">Cada estratégia tem uma conta simulada independente. As abas mostram as regras, a exposição e os custos de cada conta. Ranking por equity líquida.</p></div><span class="badge <?= $heartbeatStatus==='ATIVO'?'bg-success':($heartbeatStatus==='ERRO'||$heartbeatStatus==='ATRASADO'?'bg-danger':($heartbeatStatus==='RELOGIO DIVERGENTE'?'bg-warning text-dark':'bg-secondary')) ?>">Simulador: <?=htmlspecialchars($heartbeatStatus)?><?= $heartbeatStatus==='ATRASADO'?' · '.$heartbeatAgeLabel:'' ?></span></div>
 <?php if($notice):?><div class="alert alert-success"><?=htmlspecialchars($notice)?></div><?php endif;?><?php if($error):?><div class="alert alert-danger"><?=htmlspecialchars($error)?></div><?php endif;?>
-<?php if(!$ready&&!$temporalSchemaReady):?><div class="alert alert-warning">O banco ainda não tem as colunas de lineage temporal usadas pelo simulador. Aplique <code>sql/migrations/008_temporal_lineage.sql</code> e execute novamente o coletor de mercado. O simulador ficará bloqueado até haver candles com disponibilidade e ingestão válidas.</div><?php elseif(!$ready):?><div class="alert alert-warning">O torneio ainda não foi instalado neste banco. Envie a versão atualizada do pacote e execute pelo Terminal do cPanel: <code>php /home/USUARIO/public_html/trade_prometheus/deploy/upgrade_tournament.php</code>. O instalador aplica as migrações de 013 a 017, cria backup e verifica as contas. Troque <code>USUARIO</code> pelo usuário da hospedagem.</div><?php endif;?>
+<?php if(!$ready&&!$temporalSchemaReady):?><div class="alert alert-warning">O banco ainda não tem as colunas de lineage temporal usadas pelo simulador. Aplique <code>sql/migrations/008_temporal_lineage.sql</code> e execute novamente o coletor de mercado. O simulador ficará bloqueado até haver candles com disponibilidade e ingestão válidas.</div><?php elseif(!$ready):?><div class="alert alert-warning">O torneio ainda não está disponível neste banco. Ao abrir esta tela, a aplicação tentou instalar as migrações 013 a 018 automaticamente. Confira o erro exibido acima; se o banco ainda não tiver as tabelas-base do paper trading, aplique primeiro as migrations 011 e 012. O instalador manual continua disponível em <code>deploy/upgrade_tournament.php</code>.</div><?php endif;?>
 <ul class="nav nav-tabs mb-3 flex-wrap"><?php foreach($strategyModes as $strategyId=>$strategyLabel):?><li class="nav-item"><a class="nav-link <?=$mode===$strategyId?'active':''?>" href="?mode=<?=urlencode($strategyId)?>"><?=htmlspecialchars($strategyLabel)?></a></li><?php endforeach;?></ul>
 <p class="small text-muted mb-3"><?=htmlspecialchars($strategyDescriptions[$mode]??'')?></p>
 <section class="row g-3 mb-3">

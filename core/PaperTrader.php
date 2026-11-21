@@ -42,7 +42,7 @@ final class PaperTrader
             $accountStmt = $pdo->prepare('SELECT * FROM paper_trading_v2_accounts WHERE mode=? FOR UPDATE');
             $accountStmt->execute([$mode]);
             $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$config || !$account) throw new \RuntimeException('Aplique as migrations 013 a 017 do torneio de estratégias paper em ordem.');
+            if (!$config || !$account) throw new \RuntimeException('Aplique as migrations 013 a 018 do torneio de estratégias paper em ordem.');
             $pdo->prepare('UPDATE paper_trading_heartbeat SET status=?,last_started_at=NOW(),last_error=NULL WHERE mode=?')->execute([(int)$config['enabled'] ? 'ACTIVE' : 'STOPPED', $mode]);
             if (!(int)$config['enabled']) {
                 $pdo->commit();
