@@ -1,1 +1,3 @@
-<?php require __DIR__ . '/dashboard.php';
+<?php
+header('Location: dashboard.php#modules', true, 302);
+exit;

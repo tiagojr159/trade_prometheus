@@ -1,1 +1,3 @@
-<?php require __DIR__ . '/dashboard.php';
+<?php
+header('Location: dashboard.php#performance', true, 302);
+exit;

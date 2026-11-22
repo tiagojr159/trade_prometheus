@@ -6,6 +6,7 @@ use Prometheus\core\Database;
 use Prometheus\prediction\ProbabilityCalculator;
 
 AdminGuard::requireAdmin();
+$navActive = 'overview';
 
 // ---------- Dados reais (sem número fictício: ausência é exibida como indisponível) ----------
 $symbol = prometheus_config('default_symbol', 'BTCUSDT');
@@ -83,13 +84,7 @@ function signalStatusPt(string $status): string
 <nav class="navbar navbar-expand-lg border-bottom">
   <div class="container-fluid px-4">
     <a class="navbar-brand fw-bold" href="../index.php">PROMETHEUS</a>
-    <div class="navbar-nav">
-      <a class="nav-link" href="predictions.php">Previsões</a>
-      <a class="nav-link" href="simulation.php">Simulação</a>
-      <a class="nav-link" href="modules.php">Módulos</a>
-      <a class="nav-link" href="performance.php">Desempenho</a>
-      <a class="nav-link" href="settings.php">Configurações</a>
-    </div>
+    <?php require __DIR__ . '/navigation_links.php'; ?>
     <div class="auto-refresh-control ms-auto me-3">
       <label for="autoRefreshInterval" class="form-label">Atualização</label>
       <select id="autoRefreshInterval" class="form-select form-select-sm" aria-label="Intervalo de atualizacao automatica">
@@ -105,7 +100,7 @@ function signalStatusPt(string $status): string
     </span>
   </div>
 </nav>
-<main class="container-fluid p-4">
+<main id="overview" class="container-fluid p-4">
 
   <section class="row g-3 mb-3">
     <div class="col-12 col-xl-3">
@@ -140,7 +135,7 @@ function signalStatusPt(string $status): string
   </section>
 
   <!-- Previsões por horizonte (reais; ausência explícita) -->
-  <section class="row g-3">
+  <section id="forecasts" class="row g-3">
     <?php foreach (['15m', '1h', '4h', '24h'] as $hz): ?>
       <div class="col-12 col-md-6 col-xl-3">
         <?php if (isset($byHorizon[$hz])): $p = $byHorizon[$hz]; ?>
@@ -171,7 +166,7 @@ function signalStatusPt(string $status): string
     <?php endforeach; ?>
   </section>
 
-  <section class="row g-3 mt-1">
+  <section id="modules" class="row g-3 mt-1">
     <div class="col-12 col-xl-4">
       <div class="panel">
         <h2>Sinais (mais recentes por módulo)</h2>
@@ -219,7 +214,7 @@ function signalStatusPt(string $status): string
     </div>
   </section>
 
-  <section class="row g-3 mt-1">
+  <section id="performance" class="row g-3 mt-1">
     <div class="col-12 col-xl-4">
       <div class="panel">
         <h2>Calibração de probabilidades · 15m</h2>
