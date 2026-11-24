@@ -7,8 +7,12 @@ require __DIR__ . '/bootstrap.php';
 
 use Prometheus\core\CronLock;
 use Prometheus\core\CronRunner;
+use Prometheus\core\Database;
 use Prometheus\core\Logger;
 use Prometheus\core\PaperTrader;
+use Prometheus\core\QuantClock;
+use Prometheus\core\QuantMarket;
+use Prometheus\core\QuantTournament;
 use Prometheus\collectors\DerivativesCollector;
 use Prometheus\collectors\MacroCollector;
 use Prometheus\collectors\MarketCollector;
@@ -17,6 +21,7 @@ use Prometheus\collectors\OnChainCollector;
 use Prometheus\evaluation\PredictionEvaluator;
 use Prometheus\evaluation\WeightOptimizer;
 use Prometheus\prediction\PredictionService;
+use Prometheus\prediction\QuantShadowService;
 
 /**
  * PROMETHEUS cron runner.
@@ -35,8 +40,12 @@ use Prometheus\prediction\PredictionService;
  * - Logs de início, conclusão (com duração) e falha de cada task.
  */
 
-$knownTasks = ['market', 'market_base', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade', 'tick'];
-$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'market_base', 'predictions', 'paper_trade', 'evaluate'];
+$quantEnabled = getenv('PROMETHEUS_QUANT_V3') === '1';
+$knownTasks = ['market', 'market_base', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade', 'quant_tick', 'quant_shadow', 'quant_evaluate', 'tick'];
+$fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'market_base'];
+if ($quantEnabled) $fullCycle[] = 'quant_tick';
+array_push($fullCycle, 'predictions', 'paper_trade', 'evaluate');
+if ($quantEnabled) array_push($fullCycle, 'quant_shadow', 'quant_evaluate');
 $symbol = prometheus_config('default_symbol', 'BTCUSDT');
 
 $task = $argv[1] ?? $_GET['task'] ?? 'all';
@@ -46,6 +55,7 @@ if ($task === 'all') {
     $minute = (int)date('i');
     $hour = (int)date('G');
     $tasks = [$minute % 15 === 0 ? 'market' : 'market_base'];
+    if ($quantEnabled) $tasks[] = 'quant_tick';
     if ($minute % 15 === 0) $tasks[] = 'derivatives';
     if ($minute === 0 && $hour % 6 === 0) $tasks[] = 'macro';
     if ($minute === 0) $tasks[] = 'onchain';
@@ -55,6 +65,7 @@ if ($task === 'all') {
         $tasks[] = 'predictions'; $tasks[] = 'paper_trade'; $tasks[] = 'evaluate';
     }
     if ($minute % 5 !== 0) $tasks[] = 'paper_trade';
+    if ($quantEnabled && $minute % 5 === 0) array_push($tasks, 'quant_shadow', 'quant_evaluate');
 } elseif (in_array($task, $knownTasks, true)) {
     $tasks = [$task];
 } else {
@@ -65,7 +76,7 @@ if ($task === 'all') {
     exit(1);
 }
 
-$run = static function (string $name) use ($symbol) {
+$run = static function (string $name) use ($symbol, $quantEnabled) {
     switch ($name) {
         case 'market':
             return (new MarketCollector())->collectAllTimeframes($symbol);
@@ -88,6 +99,29 @@ $run = static function (string $name) use ($symbol) {
             return (new WeightOptimizer())->optimize();
         case 'paper_trade':
             return (new PaperTrader())->run($symbol);
+        case 'quant_tick':
+            if (!$quantEnabled) return ['status' => 'DISABLED'];
+            $db = Database::connection();
+            $tournament = new QuantTournament($db);
+            $stmt = $db->prepare('SELECT 1 FROM quant_tournament_seasons WHERE symbol=? LIMIT 1');
+            $stmt->execute([$symbol]);
+            if (!$stmt->fetchColumn()) return ['status' => 'NO_SEASON'];
+            $quoteStatus = 'AVAILABLE';
+            try {
+                QuantMarket::collectQuote($db, $symbol);
+            } catch (\Throwable $error) {
+                $quoteStatus = 'UNAVAILABLE';
+                Logger::warning('quant_market_quote_unavailable', ['error_class' => get_class($error)]);
+            }
+            return $tournament->tick($symbol, QuantClock::now()) + ['quote_feed' => $quoteStatus];
+        case 'quant_shadow':
+            return $quantEnabled
+                ? (new QuantShadowService(Database::connection()))->predict($symbol, QuantClock::now())
+                : ['status' => 'DISABLED'];
+        case 'quant_evaluate':
+            return $quantEnabled
+                ? (new QuantShadowService(Database::connection()))->evaluate(QuantClock::now())
+                : ['status' => 'DISABLED'];
         default:
             return null;
     }

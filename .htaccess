@@ -3,6 +3,9 @@ DirectoryIndex index.php
 
 <IfModule mod_rewrite.c>
 RewriteEngine On
+RewriteRule (^|/)\.(git|agents|codex|aws)(/|$) - [F,L,NC]
+RewriteRule ^(research|storage)(/|$) - [F,L,NC]
+RewriteRule ^admin/(probe_.*|audit_probe_.*|alignment_.*|item[0-9]+_.*|.*_tests)\.php$ - [F,L,NC]
 RewriteRule ^api/(.*)$ api/$1 [L]
 </IfModule>
 

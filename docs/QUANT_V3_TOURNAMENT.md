@@ -1,0 +1,19 @@
+# Torneio Quant V3
+
+Cada temporada iniciada explicitamente recebe 15 contas de 100,00 USDT virtuais. A chave da temporada é única. Reexecutar a abertura com a mesma política devolve o mesmo identificador. A criação das 15 contas ocorre em uma transação. A página administrativa liga a temporada V3 ao torneio existente e mostra ranking por patrimônio líquido, volume de saídas, motivos e estado operacional.
+
+A agenda usa UTC e intervalos de 1, 5 e 15 minutos conforme a família. As sete estratégias técnicas reaproveitam as regras de preço e volume e podem gerar propostas em sua agenda mesmo quando o sistema de previsão não gera dados. O tick verifica risco com cada nova cotação gravada. O SWING_4H preserva o horizonte de 4 horas e aguarda política aprovada. As famílias que dependem de inferência permanecem aguardando política. FUNDING_BIAS fica em caixa até existir execução perpétua, com mark, funding e margem. Os dois identificadores 10x conservam a identificação da família, com execução V3 spot a 1x.
+
+## Regras da execução spot
+
+- A decisão registra o identificador da cotação observada, candles usados, estratégia e política. A intenção registra latência mínima de um segundo. A ordem simulada exige uma nova requisição de cotação **estritamente posterior** ao instante de elegibilidade.
+- O feed REST registra o início da requisição e a recepção. A execução usa o ask nas compras e o bid nas vendas, com impacto simulado de 2 bps por lado e taxa de 10 bps por lado. Profundidade observada no melhor nível limita o volume. Um saldo de 100 USDT tem alocação máxima de 25% e orçamento de risco de 0,5% do caixa por abertura. O lote é truncado para baixo no passo de 0,00001 BTC e a política assume mínimo de 10 USDT. Os parâmetros são hipóteses da versão 3.0.0.
+- A proposta de entrada exige spread aceitável, movimento heurístico acima dos custos e limite inferior de vantagem bruta importado para aquela família e horizonte. O mesmo limite é confrontado com o spread da execução. Sem evidência aprovada pelo responsável, a proposta técnica fica registrada como `INSUFFICIENT_EDGE_EVIDENCE`.
+- Compra, ordem preenchida, taxa, caixa, quantidade, custo contábil e snapshot são persistidos na transação da conta. O saldo reconcilia com capital inicial mais a soma dos fluxos de caixa. Cada intenção admite um fill na versão atual. As saídas de risco ficam pendentes até uma cotação válida com liquidez suficiente. Stop, alvo e drawdown são calculados com o valor líquido de saída. Uma suspensão por drawdown permanece ativa.
+- A faixa entre cotações pode esconder movimentos intraminuto. O sistema mede risco pela sequência de observações efetivamente coletadas. Ordens retidas expiram após três minutos para entradas e exigem cotação recente. Após interrupção, a agenda retoma no horário atual.
+
+## Evidência para uma temporada
+
+O argumento opcional `EVIDENCIA.json` de `start-season` é um mapa por ID técnico, por exemplo uma entrada `MOMENTUM` com `policy_version`, `horizon`, `independent_trades`, `gross_lcb_bps`, `report_sha256`, `started_at_utc` e `ended_at_utc`. A janela precisa ter ao menos 60 dias já encerrados, com pelo menos 50 trades independentes e um limite inferior finito e positivo. A entrada também precisa atestar `prospective`, `ledger_verified` e `as_of_verified`.
+
+O objeto `metrics` contém `net_bps`, `legacy_net_bps`, `buy_hold_net_bps`, `incremental_lcb_bps`, `stress_1_5_net_bps`, `stress_2_net_bps`, `max_drawdown_bps` e `dsr_probability`. Promoção exige retorno líquido e limite inferior incremental positivos, drawdown dentro do orçamento e métricas de controle preenchidas. A pessoa que inicia a temporada deve revisar o estudo e vincular o hash do relatório publicado internamente. A avaliação exploratória de fechamento serve para pesquisa e não atende a esse contrato prospectivo.

@@ -41,8 +41,9 @@ final class PaperStrategyEngine
         return self::MODES;
     }
 
-    public function decide(string $mode, array $prediction, array $position, array $config, array $candles1m = [], array $candles15m = [], array $horizons = []): array
+    public function decide(string $mode, array $prediction, array $position, array $config, array $candles1m = [], array $candles15m = [], array $horizons = [], bool $requireForecast = true): array
     {
+        $config['require_forecast'] = $requireForecast;
         if ($mode === 'INVERSE') {
             $inverse = $prediction;
             $inverse['predicted_direction'] = $prediction['predicted_direction'] === 'UP' ? 'DOWN' : ($prediction['predicted_direction'] === 'DOWN' ? 'UP' : 'INDETERMINATE');
@@ -241,8 +242,8 @@ final class PaperStrategyEngine
         $lastVolume = (float)end($window)['volume'];
         $averageVolume = $volumeSum / count($window);
         $side = null;
-        if ($price > $vwap * 1.001 && $trend > 0 && $lastVolume >= $averageVolume && ($p['predicted_direction'] ?? '') === 'UP') $side = 'LONG';
-        elseif ($price < $vwap * 0.999 && $trend < 0 && $lastVolume >= $averageVolume && ($p['predicted_direction'] ?? '') === 'DOWN') $side = 'SHORT';
+        if ($price > $vwap * 1.001 && $trend > 0 && $lastVolume >= $averageVolume && (!$config['require_forecast'] || ($p['predicted_direction'] ?? '') === 'UP')) $side = 'LONG';
+        elseif ($price < $vwap * 0.999 && $trend < 0 && $lastVolume >= $averageVolume && (!$config['require_forecast'] || ($p['predicted_direction'] ?? '') === 'DOWN')) $side = 'SHORT';
         $expected = $side === null ? 0.0 : abs($price - $vwap) / max(1e-12, $price) * 100;
         return $this->signal($side, $p, $position, $config, $expected, 'VWAP_TREND', 'VWAP: preço, volume recente, tendência de 15m e previsão precisam confirmar a mesma direção.');
     }
@@ -372,7 +373,7 @@ final class PaperStrategyEngine
         if ($side === 'SHORT' && empty($config['allow_short'])) return $this->result($current === 'LONG' ? 'CLOSE_LONG' : 'NO_TRADE', $p, $score, $expected, $cost, ['SHORT_DISABLED'], 'SHORT sintético está desativado.');
         if ($current === $side) return $this->result('HOLD_' . $side, $p, $score, $expected, $cost, ['POSITION_ALREADY_ALIGNED'], 'Mantém a posição alinhada com a regra técnica.');
         $direction = $side === 'LONG' ? 'UP' : 'DOWN';
-        if ($p['predicted_direction'] !== $direction || (float)$p['confidence'] < (float)($config['min_confidence'] ?? 0)) {
+        if ($config['require_forecast'] && ($p['predicted_direction'] !== $direction || (float)$p['confidence'] < (float)($config['min_confidence'] ?? 0))) {
             $action = $current === 'FLAT' ? 'NO_TRADE' : 'CLOSE_' . $current;
             return $this->result($action, $p, $score, $expected, $cost, ['FORECAST_NOT_CONFIRMED'], 'A direção prevista precisa confirmar o sinal técnico com a confiança mínima configurada.');
         }

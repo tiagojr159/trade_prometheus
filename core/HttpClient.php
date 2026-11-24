@@ -15,6 +15,15 @@ namespace Prometheus\core;
  */
 final class HttpClient
 {
+    private ?int $timeout;
+    private ?int $retries;
+
+    public function __construct(?int $timeout = null, ?int $retries = null)
+    {
+        $this->timeout = $timeout;
+        $this->retries = $retries;
+    }
+
     public function getJson(string $url, array $headers = [], ?int $ttl = null): array
     {
         $cacheKey = 'GET:' . $url . ':' . json_encode($headers);
@@ -49,7 +58,7 @@ final class HttpClient
 
     private function requestJsonWithRetry(string $method, string $url, ?array $body, array $headers): array
     {
-        $maxRetries = (int)prometheus_config('collector.api_retries', 2);
+        $maxRetries = $this->retries ?? (int)prometheus_config('collector.api_retries', 2);
         $attempt = 0;
         lastRetry:
         try {
@@ -78,7 +87,7 @@ final class HttpClient
         }
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => (int)prometheus_config('collector.api_timeout', 15),
+            CURLOPT_TIMEOUT => $this->timeout ?? (int)prometheus_config('collector.api_timeout', 15),
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_HTTPHEADER => $headerLines,
             CURLOPT_USERAGENT => 'PrometheusBTC/1.0',
