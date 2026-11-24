@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-
+ 
 /**
  * PROMETHEUS bootstrap — idempotente.
  * Pode ser requerido múltiplas vezes (require ou require_once, em qualquer ordem),
