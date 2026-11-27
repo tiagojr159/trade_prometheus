@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS arbitrage_dex_pool_snapshots (
+ id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ network VARCHAR(48) NOT NULL,
+ dex_name VARCHAR(64) NULL,
+ pool_address VARCHAR(128) NOT NULL,
+ pool_label VARCHAR(128) NULL,
+ base_token_address VARCHAR(128) NULL,
+ base_token_symbol VARCHAR(32) NULL,
+ quote_token_address VARCHAR(128) NULL,
+ quote_token_symbol VARCHAR(32) NULL,
+ base_token_price_usd DECIMAL(38,18) NULL,
+ quote_token_price_usd DECIMAL(38,18) NULL,
+ base_token_balance DECIMAL(38,18) NULL,
+ quote_token_balance DECIMAL(38,18) NULL,
+ reserve_usd DECIMAL(38,8) NULL,
+ volume_24h_usd DECIMAL(38,8) NULL,
+ observed_at_utc DATETIME(6) NOT NULL,
+ source VARCHAR(32) NOT NULL,
+ details_json LONGTEXT NOT NULL,
+ UNIQUE KEY uq_arb_dex_pool_snapshot(network,pool_address,observed_at_utc),
+ KEY ix_arb_dex_pool_time(network,observed_at_utc),
+ KEY ix_arb_dex_token_pair(base_token_symbol,quote_token_symbol,observed_at_utc)
+) ENGINE=InnoDB;

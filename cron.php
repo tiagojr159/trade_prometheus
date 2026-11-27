@@ -13,6 +13,7 @@ use Prometheus\core\PaperTrader;
 use Prometheus\core\QuantClock;
 use Prometheus\core\QuantMarket;
 use Prometheus\core\QuantTournament;
+use Prometheus\core\Arbitrage\FundingRateCollector;
 use Prometheus\collectors\DerivativesCollector;
 use Prometheus\collectors\MacroCollector;
 use Prometheus\collectors\MarketCollector;
@@ -41,9 +42,11 @@ use Prometheus\prediction\QuantShadowService;
  */
 
 $quantEnabled = getenv('PROMETHEUS_QUANT_V3') === '1';
-$knownTasks = ['market', 'market_base', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade', 'quant_tick', 'quant_shadow', 'quant_evaluate', 'tick'];
+$arbitrageEnabled = getenv('PROMETHEUS_ARBITRAGE') === '1';
+$knownTasks = ['market', 'market_base', 'derivatives', 'onchain', 'macro', 'news', 'predictions', 'evaluate', 'optimize', 'paper_trade', 'quant_tick', 'quant_shadow', 'quant_evaluate', 'arbitrage_funding', 'tick'];
 $fullCycle = ['market', 'derivatives', 'onchain', 'macro', 'news', 'market_base'];
 if ($quantEnabled) $fullCycle[] = 'quant_tick';
+if ($arbitrageEnabled) $fullCycle[] = 'arbitrage_funding';
 array_push($fullCycle, 'predictions', 'paper_trade', 'evaluate');
 if ($quantEnabled) array_push($fullCycle, 'quant_shadow', 'quant_evaluate');
 $symbol = prometheus_config('default_symbol', 'BTCUSDT');
@@ -121,6 +124,10 @@ $run = static function (string $name) use ($symbol, $quantEnabled) {
         case 'quant_evaluate':
             return $quantEnabled
                 ? (new QuantShadowService(Database::connection()))->evaluate(QuantClock::now())
+                : ['status' => 'DISABLED'];
+        case 'arbitrage_funding':
+            return $arbitrageEnabled
+                ? (new FundingRateCollector())->collect(Database::connection(), $symbol)
                 : ['status' => 'DISABLED'];
         default:
             return null;
